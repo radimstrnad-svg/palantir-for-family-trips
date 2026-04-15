@@ -1,781 +1,193 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { importLibrary, setOptions } from '@googlemaps/js-api-loader'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
-  ArrowRight,
-  CarFront,
-  Cloud,
-  CloudRain,
-  Download,
-  ExternalLink,
-  Flag,
-  Gauge,
-  Globe,
-  Home,
-  LayoutGrid,
-  Map as MapIcon,
-  MapPin,
-  MessageSquare,
-  Pause,
-  Phone,
-  Play,
-  Receipt,
-  RotateCcw,
-  Route,
   Search,
+  MapPin,
+  Clock,
   Settings,
-  Star,
-  Sun,
+  Shield,
+  Zap,
+  ChevronRight,
+  ChevronLeft,
+  Filter,
   Users,
+  Info,
+  ExternalLink,
+  Navigation,
+  CheckSquare,
+  Square,
+  AlertCircle,
+  Clock3,
+  Map,
+  Layers,
+  Route,
+  Activity,
+  Calendar,
+  DollarSign,
+  Coffee,
+  ChevronDown,
+  ArrowRight,
   Utensils,
-  X,
+  Plane,
+  Home,
+  CheckCircle2,
+  MoreVertical,
 } from 'lucide-react'
-import { clsx } from 'clsx'
-import { twMerge } from 'tailwind-merge'
-import palantirLogo from './assets/palantir-logo.svg'
+import { motion, AnimatePresence } from 'framer-motion'
+import { setOptions, importLibrary } from '@googlemaps/js-api-loader'
+
+import {
+  DAYS,
+  TIMELINE_SLOTS,
+  itineraryItemTypes,
+  itineraryItemTypeColors,
+  categoryIcons,
+  categoryColors,
+  getInitialTripDocument,
+  getSearchResults,
+  projectTripDocument,
+  ensureSelectionForPage,
+  getEntityBySelection,
+  getLocationForEntity,
+  getRouteForEntity,
+  getEntityById,
+  makeEntityKey,
+  stampFamilyMetadata,
+  updateEntityInCollection,
+  OBSOLETE_PLAN_ROUTE_IDS,
+  OBSOLETE_PLAN_ITINERARY_IDS,
+  SEEDED_PLAN_REFRESH_IDS,
+  JIANG_ROAD_TRIP_STOP_DEFAULTS,
+  FAMILY_VEHICLE_DEFAULTS,
+  ROUTE_SIM_DEFAULTS,
+  YOSEMITE_ROUTE_DEFAULTS,
+  synchronizeRoutePaths,
+  ENTITY_PAGE,
+} from './tripModel'
+import {
+  formatSlotTime,
+  getCurrentTripCursor,
+  clampTimelineCursor,
+  parseCurrencyInput,
+  formatCurrency,
+  cn,
+} from './tripModel'
+import {
+  getTasksByFamily,
+  getFamilyReadiness,
+  getFamilyLabel,
+  getExpenseAllocations,
+  getFamilyExpenseBurden,
+  EXPENSE_SPLIT_LABELS,
+  buildManualAllocationSeed,
+  getTripDayWeather,
+  getMapWeather,
+  getMapWeatherTargets,
+} from './tripModel'
+import { fetchWeatherBundle } from './weather'
+import { PUBLISH_CONFIG, isLiveExternalDataEnabled } from './publishConfig'
+import { clearLegacyTripStorage } from './usePersistedTripState'
 import CommandMap from './CommandMap'
 import InspectorRail from './InspectorRail'
-import { PUBLISH_CONFIG, isLiveExternalDataEnabled } from './publishConfig'
-import { usePersistedTripState } from './usePersistedTripState'
-import { DAYS, NAV_ITEMS, TIME_SLOTS, TRIP_META } from './tripData'
-import {
-  ENTITY_PAGE,
-  ensureSelectionForPage,
-  getDayMeta,
-  getEntityById,
-  getEntityBySelection,
-  getEntitySummary,
-  getEntityTitle,
-  getFamilyReadiness,
-  TRIP_DOCUMENT_STORAGE_KEY,
-  VIEWER_PROFILE_STORAGE_KEY,
-  clearLegacyTripStorage,
-  getInitialTripDocument,
-  getLinkedEntities,
-  getLocationForEntity,
-  getPageNote,
-  getRouteForEntity,
-  getItineraryItemEffectiveSpan,
-  getRouteSimulationWindow,
-  getSearchResults,
-  getSlotLabel,
-  getTasksByFamily,
-  getTasksForDay,
-  getTasksForEntity,
-  getTimelineContext,
-  makeEntityKey,
-  projectTripDocument,
-  synchronizeRoutePaths,
-  updateEntityInCollection,
-} from './tripModel'
-import { fetchWeatherBundle, getMapWeather, getMapWeatherTargets, getTripDayWeather } from './weather'
+import { useTripData, useUpdateFamilyStatus, useUpdateChecklist } from './integrations/supabase/hooks'
+import { supabase } from './integrations/supabase/client'
 
-const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY
-const GOOGLE_MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID
-const SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV = import.meta.env.VITE_DISABLE_LEGACY_GOOGLE_ROUTING === 'true'
-const SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV = Boolean(import.meta.env?.DEV)
+const VIEW_PROFILE_STORAGE_KEY = 'trip_viewer_profile_v1'
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || ''
+const GOOGLE_MAP_ID = import.meta.env.VITE_GOOGLE_MAP_ID || ''
+const SKIP_DEPRECATED_GOOGLE_PLACES_IN_DEV = false
+const SKIP_DEPRECATED_GOOGLE_ROUTING_IN_DEV = false
 
-function cn(...inputs) {
-  return twMerge(clsx(inputs))
-}
-
-const PAGE_ICONS = {
-  itinerary: LayoutGrid,
-  stay: Home,
-  meals: Utensils,
-  activities: MapIcon,
-  expenses: Receipt,
-  families: Users,
-}
-
-const WEATHER_ICONS = {
-  sun: Sun,
-  partly: Cloud,
-  cloud: Cloud,
-  rain: CloudRain,
-  storm: CloudRain,
-  fog: Cloud,
-  wind: Cloud,
-  snow: Cloud,
-}
-
-const STATUS_STYLES = {
-  Transit: 'bg-[#58A6FF]/18 text-[#58A6FF]',
-  'Friday Arrival': 'bg-[#D29922]/18 text-[#D29922]',
-  Assigned: 'bg-[#58A6FF]/18 text-[#58A6FF]',
-  Pending: 'bg-[#D29922]/18 text-[#D29922]',
-  Open: 'bg-[#D29922]/18 text-[#D29922]',
-  Settled: 'bg-[#3FB950]/18 text-[#3FB950]',
-  Go: 'bg-[#3FB950]/18 text-[#3FB950]',
-  Watch: 'bg-[#D29922]/18 text-[#D29922]',
-}
-
-const TIMELINE_COLORS = {
-  info: 'border-[#58A6FF] bg-[#58A6FF]/10 text-[#C9D1D9]',
-  warning: 'border-[#D29922] bg-[#D29922]/10 text-[#D29922]',
-  success: 'border-[#3FB950] bg-[#3FB950]/10 text-[#3FB950]',
-  critical: 'border-[#F85149] bg-[#F85149]/10 text-[#F85149]',
-  violet: 'border-[#A371F7] bg-[#A371F7]/10 text-[#A371F7]',
-  muted: 'border-[#4B5563] bg-[#4B5563]/10 text-[#8B949E]',
-}
-
-const EXPENSE_SPLIT_LABELS = {
-  equal: 'Equal split',
-  manual: 'Manual allocation',
-  individual: 'Individual',
-}
-
-const PLAYBACK_SPEED_OPTIONS = [1, 2, 3, 4]
-const TIMELINE_HOURS_PER_SLOT = 6
-const TIMELINE_HOUR_STEPS = 24
-const VISIBLE_TIMELINE_START_HOUR = 6
-const VISIBLE_TIMELINE_END_HOUR = 24
-const MISSION_LAUNCH_HOUR = 9
-const VISIBLE_TIMELINE_SLOT_START = VISIBLE_TIMELINE_START_HOUR / TIMELINE_HOURS_PER_SLOT
-const VISIBLE_TIMELINE_SLOT_END = VISIBLE_TIMELINE_END_HOUR / TIMELINE_HOURS_PER_SLOT
-const VISIBLE_TIMELINE_SLOT_SPAN = VISIBLE_TIMELINE_SLOT_END - VISIBLE_TIMELINE_SLOT_START
-const MISSION_TIME_PRESETS = [6, 9, 12, 15, 18, 21]
-const PLAYBACK_SLOT_UNITS_PER_SECOND = 0.1
-const MISSION_FEED_LIFETIME_MS = 3000
-const MISSION_FEED_FADE_MS = 500
-const MISSION_FEED_TICK_MS = 100
-const PLAYBACK_MAX_FRAME_DELTA_SECONDS = 0.18
-const PLAYBACK_STALL_RESET_SECONDS = 0.6
-
-const SEEDED_PLAN_REFRESH_IDS = {
-  families: new Set(['north-star', 'silver-peak', 'desert-bloom']),
-  locations: new Set(['pine-airbnb', 'pine-lake-beach', 'yosemite', 'grill-pml', 'two-guys-pizza', 'mountain-room', 'priest-station', 'around-horn']),
-  meals: new Set(['thu-dinner', 'fri-lunch', 'fri-dinner', 'sat-lunch', 'sat-dinner']),
-  activities: new Set(['fri-lake', 'sat-yosemite']),
-  tasks: new Set(['task-grill-kit', 'task-grocery-run', 'task-priest-station-plan']),
-  itineraryItems: new Set([
-    'north-star-drive',
-    'silver-peak-drive',
-    'desert-bloom-drive',
-    'north-star-grill-shuttle',
-    'silver-peak-grill-shuttle',
-    'north-star-grill-return',
-    'silver-peak-grill-return',
-    'thu-dinner-ops',
-    'fri-lake',
-    'groceries',
-    'park-prep',
-    'north-star-lake-hop',
-    'silver-peak-lake-hop',
-    'north-star-mountain-room-return',
-    'silver-peak-mountain-room-return',
-    'north-star-yosemite-push',
-    'silver-peak-yosemite-push',
-    'desert-bloom-yosemite-push',
-    'north-star-priest-station',
-    'silver-peak-priest-station',
-    'desert-bloom-priest-station',
-    'north-star-basecamp-return',
-    'silver-peak-basecamp-return',
-    'desert-bloom-basecamp-return',
-  ]),
-  routes: new Set([
-    'route-la-north-star',
-    'route-sf-silver-peak',
-    'route-sf-desert-bloom',
-    'route-thu-grill-north-star',
-    'route-thu-grill-silver-peak',
-    'route-thu-return-north-star',
-    'route-thu-return-silver-peak',
-    'route-fri-beach-north-star',
-    'route-fri-beach-silver-peak',
-    'route-fri-return-north-star',
-    'route-fri-return-silver-peak',
-    'route-sat-yosemite-north-star',
-    'route-sat-yosemite-silver-peak',
-    'route-sat-yosemite-desert-bloom',
-    'route-sat-priest-station-north-star',
-    'route-sat-priest-station-silver-peak',
-    'route-sat-priest-station-desert-bloom',
-    'route-sat-basecamp-return-north-star',
-    'route-sat-basecamp-return-silver-peak',
-    'route-sat-basecamp-return-desert-bloom',
-  ]),
-}
-
-const OBSOLETE_PLAN_ROUTE_IDS = new Set([
-  'route-yosemite-day',
-  'route-fri-beach-desert-bloom',
-  'route-fri-mountain-room-north-star',
-  'route-fri-mountain-room-silver-peak',
-  'route-fri-mountain-room-desert-bloom',
-  'route-fri-return-desert-bloom',
-])
-
-const OBSOLETE_PLAN_ITINERARY_IDS = new Set([
-  'desert-bloom-lake-hop',
-  'north-star-mountain-room',
-  'silver-peak-mountain-room',
-  'desert-bloom-mountain-room',
-  'desert-bloom-mountain-room-return',
-])
-
-const DAY_BRIEFING_COPY = {
-  thu: {
-    code: 'Insertion / Consolidation',
-    tone: 'Amber',
-    summary:
-      'Thursday is about getting everyone in cleanly. The main threat is staggered arrival timing, road fatigue, and losing momentum before basecamp is fully online. Win condition: all families reach Pine Mountain Lake, get through the gate, settle basecamp, and keep dinner simple enough that nobody burns out on night one.',
-    lookouts: [
-      'Protect arrival energy. Long-drive families should prioritize clean breaks over pushing nonstop.',
-      'Gate + check-in friction is the main avoidable failure point, so keep address, fee, and access details ready.',
-      'Do not over-schedule the evening. Dinner and reset are the operation.',
-    ],
-  },
-  fri: {
-    code: 'Basecamp / Local Ops',
-    tone: 'Blue',
-    summary:
-      'Friday is the stabilization day. Everyone is in theater, so the goal shifts from transit to rhythm: house setup, lake access, kid-friendly pacing, and preserving energy for the Yosemite push. Keep the day flexible and bias toward a low-friction, high-enjoyment tempo.',
-    lookouts: [
-      'Parking, beach timing, and family split-ups can create unnecessary overhead if not lightly coordinated.',
-      'Use this day to test house logistics, meal flow, and what each family actually needs before Saturday.',
-      'Avoid turning the lake day into a checklist marathon. The point is to settle in.',
-    ],
-  },
-  sat: {
-    code: 'Yosemite Main Mission',
-    tone: 'Red',
-    summary:
-      'Saturday is the primary excursion and the highest-complexity day of the trip. This is the longest operating window with the most movement, the most dependency on traffic and timing, and the highest risk of decision fatigue. Win condition: enter Yosemite smoothly, pick a manageable plan, and preserve enough margin for a calm return and cookout evening.',
-    lookouts: [
-      'Departure discipline matters more than itinerary ambition. Late starts compound quickly on Yosemite day.',
-      'Pick a realistic park scope and protect turnaround timing before everyone gets tired.',
-      'This is the day to simplify decisions, not multiply them.',
-    ],
-  },
-  sun: {
-    code: 'Exfil / Reset',
-    tone: 'Green',
-    summary:
-      'Sunday is a controlled exit. The mission is not sightseeing, it is a clean departure: brunch, pack-out, house reset, and staggered family departures without chaos. The smoother the morning feels, the better the whole weekend lands in memory.',
-    lookouts: [
-      'Keep brunch simple and start pack-out early enough that checkout does not become the whole mood.',
-      'Assign quiet ownership for trash, fridge sweep, and final vehicle loading.',
-      'Avoid one-last-thing sprawl. The goal is a graceful exit, not extra complexity.',
-    ],
-  },
-}
-
-const MISSION_OBJECTIVE_COPY = {
-  thu: 'Get inbound units through the gate, staged at basecamp, and settled before evening tempo begins.',
-  fri: 'Push the local ops window cleanly, keep coordination light, and preserve energy for the main park day.',
-  sat: 'Launch the park convoy on time, keep the group inside a realistic scope, and hold margin for a calm return.',
-  sun: 'Run a controlled pack-out and stagger departures without turning checkout into the whole mood.',
-}
-
-const MISSION_LAUNCH_THEME = {
-  thu: {
-    accent: '#F2CC60',
-    accentStrong: '#FFD76B',
-    accentSoft: 'rgba(242, 204, 96, 0.14)',
-    accentGlow: 'rgba(242, 204, 96, 0.28)',
-    accentBorder: 'rgba(242, 204, 96, 0.34)',
-    accentText: '#F2CC60',
-    panelGlow: 'rgba(242, 204, 96, 0.18)',
-  },
-  fri: {
-    accent: '#58A6FF',
-    accentStrong: '#7AB8FF',
-    accentSoft: 'rgba(88, 166, 255, 0.14)',
-    accentGlow: 'rgba(88, 166, 255, 0.26)',
-    accentBorder: 'rgba(88, 166, 255, 0.34)',
-    accentText: '#58A6FF',
-    panelGlow: 'rgba(88, 166, 255, 0.18)',
-  },
-  sat: {
-    accent: '#F85149',
-    accentStrong: '#FF7B72',
-    accentSoft: 'rgba(248, 81, 73, 0.14)',
-    accentGlow: 'rgba(248, 81, 73, 0.26)',
-    accentBorder: 'rgba(248, 81, 73, 0.34)',
-    accentText: '#F85149',
-    panelGlow: 'rgba(248, 81, 73, 0.18)',
-  },
-  sun: {
-    accent: '#3FB950',
-    accentStrong: '#56D364',
-    accentSoft: 'rgba(63, 185, 80, 0.14)',
-    accentGlow: 'rgba(63, 185, 80, 0.26)',
-    accentBorder: 'rgba(63, 185, 80, 0.34)',
-    accentText: '#3FB950',
-    panelGlow: 'rgba(63, 185, 80, 0.18)',
-  },
-}
-
-const MISSION_LAUNCH_KEYFRAMES = `
-  @keyframes mission-launch-panel-in {
-    0% {
-      opacity: 0;
-      transform: translateY(24px) scale(0.97);
-    }
-    100% {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-    }
+function StatusPill({ children, tone }) {
+  const styles = {
+    Transit: 'bg-[#1f2937] text-[#9ca3af] border-[#374151]',
+    Arrived: 'bg-[#064e3b] text-[#34d399] border-[#065f46]',
+    'Family Arrival': 'bg-[#1e3a8a] text-[#93c5fd] border-[#1e40af]',
+    Go: 'bg-[#064e3b] text-[#34d399] border-[#065f46]',
+    Watch: 'bg-[#78350f] text-[#fbbf24] border-[#92400e]',
+    Hold: 'bg-[#450a0a] text-[#f87171] border-[#7f1d1d]',
+    Pending: 'bg-[#1f2937] text-[#9ca3af] border-[#374151]',
+    Open: 'bg-[#78350f] text-[#fbbf24] border-[#92400e]',
+    Settled: 'bg-[#064e3b] text-[#34d399] border-[#065f46]',
   }
-
-  @keyframes mission-launch-halo {
-    0%, 100% {
-      transform: scale(1);
-      opacity: 0.92;
-    }
-    50% {
-      transform: scale(1.02);
-      opacity: 1;
-    }
-  }
-
-  @keyframes mission-launch-digit-in {
-    0% {
-      opacity: 0;
-      transform: translateY(12px) scale(0.9);
-    }
-    100% {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-    }
-  }
-`
-
-function formatCurrency(amount) {
-  const value = Number.isFinite(amount) ? amount : Number(amount) || 0
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 2,
-  }).format(value)
-}
-
-function parseCurrencyInput(value) {
-  if (typeof value !== 'string') return Number(value) || 0
-  const normalized = value.replace(/[^0-9.]/g, '')
-  if (!normalized.trim()) return 0
-  return Number(normalized) || 0
-}
-
-function getFamilyLabel(families, familyId) {
-  return families.find((family) => family.id === familyId)?.title || 'Unknown family'
-}
-
-function stampFamilyMetadata(item, familyId) {
-  if (!familyId) return item
-
-  const timestamp = new Date().toISOString()
-  return {
-    ...item,
-    lastEditedByFamilyId: familyId,
-    lastEditedAt: timestamp,
-    createdByFamilyId: item.createdByFamilyId || familyId,
-    createdAt: item.createdAt || timestamp,
-  }
-}
-
-function buildEqualExpenseAllocations(amount, families) {
-  if (!families.length) return []
-
-  const totalCents = Math.max(Math.round((Number(amount) || 0) * 100), 0)
-  const baseCents = Math.floor(totalCents / families.length)
-  const remainder = totalCents - baseCents * families.length
-
-  return families.map((family, index) => ({
-    familyId: family.id,
-    title: family.title,
-    amount: (baseCents + (index < remainder ? 1 : 0)) / 100,
-  }))
-}
-
-function getExpenseAllocations(expense, families) {
-  if (!expense || !families.length) return []
-  if (expense.allocationMode === 'individual') {
-    return families.map((family) => ({
-      familyId: family.id,
-      title: family.title,
-      amount: 0,
-    }))
-  }
-  if (expense.allocationMode === 'manual') {
-    return families.map((family) => ({
-      familyId: family.id,
-      title: family.title,
-      amount: Number(expense.allocations?.[family.id]) || 0,
-    }))
-  }
-  return buildEqualExpenseAllocations(expense.amount, families)
-}
-
-function buildManualAllocationSeed(amount, families) {
-  return Object.fromEntries(
-    buildEqualExpenseAllocations(amount, families).map((item) => [item.familyId, item.amount]),
-  )
-}
-
-function getFamilyExpenseBurden(expenses, families) {
-  const totals = Object.fromEntries(families.map((family) => [family.id, 0]))
-
-  expenses.forEach((expense) => {
-    if (expense.allocationMode === 'individual') return
-    getExpenseAllocations(expense, families).forEach((allocation) => {
-      totals[allocation.familyId] = (totals[allocation.familyId] || 0) + allocation.amount
-    })
-  })
-
-  return families.map((family) => ({
-    familyId: family.id,
-    title: family.title,
-    amount: totals[family.id] || 0,
-  }))
-}
-
-function clampTimelineCursor(slot) {
-  const maxCursor = DAYS.length * TIME_SLOTS.length - 0.001
-  return Math.min(Math.max(slot, 0), maxCursor)
-}
-
-function getDayVisibleCursorRange(dayIndex) {
-  const dayStart = dayIndex * TIME_SLOTS.length
-  return {
-    start: dayStart + VISIBLE_TIMELINE_SLOT_START,
-    end: dayStart + VISIBLE_TIMELINE_SLOT_END,
-  }
-}
-
-function projectCursorToVisibleTimelineRatio(cursorSlot, dayCount = DAYS.length) {
-  const normalizedCursor = clampTimelineCursor(cursorSlot)
-  const dayIndex = Math.min(Math.max(Math.floor(normalizedCursor / TIME_SLOTS.length), 0), dayCount - 1)
-  const dayOffset = normalizedCursor - dayIndex * TIME_SLOTS.length
-  const clampedDayOffset = Math.min(Math.max(dayOffset, VISIBLE_TIMELINE_SLOT_START), VISIBLE_TIMELINE_SLOT_END)
-  const visibleCursor = dayIndex * VISIBLE_TIMELINE_SLOT_SPAN + (clampedDayOffset - VISIBLE_TIMELINE_SLOT_START)
-  const totalVisibleSlots = Math.max(dayCount * VISIBLE_TIMELINE_SLOT_SPAN, 0.0001)
-  return Math.min(Math.max(visibleCursor / totalVisibleSlots, 0), 0.999999)
-}
-
-function projectVisibleTimelineRatioToCursor(ratio, dayCount = DAYS.length) {
-  const totalVisibleSlots = Math.max(dayCount * VISIBLE_TIMELINE_SLOT_SPAN, 0.0001)
-  const clampedRatio = Math.min(Math.max(ratio, 0), 0.999999)
-  const visibleCursor = clampedRatio * totalVisibleSlots
-  const dayIndex = Math.min(Math.max(Math.floor(visibleCursor / VISIBLE_TIMELINE_SLOT_SPAN), 0), dayCount - 1)
-  const dayVisibleOffset = visibleCursor - dayIndex * VISIBLE_TIMELINE_SLOT_SPAN
-  return clampTimelineCursor(dayIndex * TIME_SLOTS.length + VISIBLE_TIMELINE_SLOT_START + dayVisibleOffset)
-}
-
-function getCursorHourInDay(cursorSlot) {
-  const normalizedCursor = clampTimelineCursor(cursorSlot)
-  const dayOffset = normalizedCursor - Math.floor(normalizedCursor / TIME_SLOTS.length) * TIME_SLOTS.length
-  return dayOffset * TIMELINE_HOURS_PER_SLOT
-}
-
-function getMissionLaunchCursor(dayIndex) {
-  return clampTimelineCursor(dayIndex * TIME_SLOTS.length + MISSION_LAUNCH_HOUR / TIMELINE_HOURS_PER_SLOT)
-}
-
-function getSuggestedPlaybackStartCursor(doc, cursorSlot, operationCheckpoints = []) {
-  const windows = (doc.routes || [])
-    .map((route) => getRouteSimulationWindow(doc, route))
-    .filter((window) => Number.isFinite(window.start) && Number.isFinite(window.end))
-    .sort((left, right) => left.start - right.start)
-  const checkpoints = (operationCheckpoints || [])
-    .filter((checkpoint) => Number.isFinite(checkpoint?.startSlot))
-    .sort((left, right) => left.startSlot - right.startSlot)
-  const routeLeadIn = 0.08
-  const checkpointLeadIn = 0.03
-
-  const normalizedCursor = clampTimelineCursor(cursorSlot)
-  if (!windows.length && !checkpoints.length) return normalizedCursor
-
-  const activeWindow = windows.find((window) => normalizedCursor >= window.start && normalizedCursor <= window.end)
-  if (activeWindow) return normalizedCursor
-
-  const nextWindow = windows.find((window) => window.start > normalizedCursor)
-  const nextCheckpoint = checkpoints.find((checkpoint) => checkpoint.startSlot > normalizedCursor)
-
-  if (nextCheckpoint && (!nextWindow || nextCheckpoint.startSlot <= nextWindow.start)) {
-    return clampTimelineCursor(Math.max(nextCheckpoint.startSlot - checkpointLeadIn, 0))
-  }
-
-  if (nextWindow) {
-    return clampTimelineCursor(Math.max(nextWindow.start - routeLeadIn, 0))
-  }
-
-  if (nextCheckpoint) {
-    return clampTimelineCursor(Math.max(nextCheckpoint.startSlot - checkpointLeadIn, 0))
-  }
-
-  if (windows.length) {
-    return clampTimelineCursor(Math.max(windows[0].start - routeLeadIn, 0))
-  }
-
-  return normalizedCursor
-}
-
-function getCurrentTripCursor(now = new Date()) {
-  const currentYear = now.getFullYear()
-  const tripStart = new Date(currentYear, 3, 9, 0, 0, 0, 0)
-  const tripEnd = new Date(currentYear, 3, 13, 0, 0, 0, 0)
-  const tripDurationHours = (tripEnd.getTime() - tripStart.getTime()) / (1000 * 60 * 60)
-  const hoursIntoTrip = (now.getTime() - tripStart.getTime()) / (1000 * 60 * 60)
-  const clampedHours = Math.min(Math.max(hoursIntoTrip, 0), tripDurationHours)
-  return clampTimelineCursor(clampedHours / TIMELINE_HOURS_PER_SLOT)
-}
-
-function getCompactTravelLabel(item) {
-  const status = (item?.status || '').toLowerCase()
-  const title = (item?.title || '').toLowerCase()
-
-  if (status.includes('return') || title.includes('rtb') || title.includes('homebound')) return 'RTB'
-  if (status.includes('dinner') || title.includes('dinner')) return 'DIN'
-  if (status.includes('lunch') || title.includes('lunch')) return 'LCH'
-  if (status.includes('park') || title.includes('yosemite')) return 'YOS'
-  if (status.includes('arrival') || title.includes('drive')) return 'DRV'
-  if (status.includes('hop')) return 'HOP'
-
-  const fallback = item?.status || item?.title || 'DRV'
-  return fallback.replace(/[^a-z0-9]/gi, '').slice(0, 3).toUpperCase() || 'DRV'
-}
-
-function getCursorDay(cursorSlot) {
-  const dayIndex = Math.min(Math.floor(cursorSlot / TIME_SLOTS.length), DAYS.length - 1)
-  return DAYS[Math.max(dayIndex, 0)] || DAYS[0]
-}
-
-function formatNameList(labels) {
-  const cleanLabels = labels.filter(Boolean)
-  if (!cleanLabels.length) return ''
-  if (cleanLabels.length === 1) return cleanLabels[0]
-  if (cleanLabels.length === 2) return `${cleanLabels[0]} + ${cleanLabels[1]}`
-  return `${cleanLabels.slice(0, -1).join(', ')} + ${cleanLabels[cleanLabels.length - 1]}`
-}
-
-function stripDayPrefix(label) {
-  return (label || '').replace(/^[A-Za-z]{3}\s+/, '')
-}
-
-function dedupeById(items) {
-  const seen = new Set()
-  return items.filter((item) => {
-    if (!item?.id) return false
-    if (seen.has(item.id)) return false
-    seen.add(item.id)
-    return true
-  })
-}
-
-function pickMostFrequentEntity(items) {
-  const counts = new Map()
-  let bestItem = null
-  let bestCount = 0
-
-  items.forEach((item) => {
-    if (!item?.id) return
-    const nextCount = (counts.get(item.id) || 0) + 1
-    counts.set(item.id, nextCount)
-    if (nextCount > bestCount) {
-      bestCount = nextCount
-      bestItem = item
-    }
-  })
-
-  return bestItem || items.find(Boolean) || null
-}
-
-function getRelatedTravelItemsForGate(doc, gate) {
-  const gateItems = gate?.items || []
-  const primaryItem = gateItems[0]
-  if (!primaryItem) return []
-
-  const gateEntityKeys = new Set(
-    gateItems.flatMap((item) => [makeEntityKey('itineraryItem', item.id), ...(item.linkedEntityKeys || [])]),
-  )
-  const sameDayTravelItems = doc.itineraryItems.filter((item) => item.rowId === 'travel' && item.dayId === primaryItem.dayId)
-  const directlyLinkedTravelItems = sameDayTravelItems.filter((item) =>
-    (item.linkedEntityKeys || []).some((key) => gateEntityKeys.has(key)),
-  )
-  if (directlyLinkedTravelItems.length) return directlyLinkedTravelItems
-
-  const launchWaveEnd = gate.startSlot + 1.2
-  const sameWaveTravelItems = sameDayTravelItems.filter((item) => {
-    const itemEnd = item.startSlot + getItineraryItemEffectiveSpan(doc, item)
-    return itemEnd >= gate.startSlot - 0.1 && item.startSlot <= launchWaveEnd
-  })
-  if (sameWaveTravelItems.length) return sameWaveTravelItems
-
-  return sameDayTravelItems.filter((item) => item.startSlot >= gate.startSlot - 0.25 && item.startSlot <= gate.startSlot + 0.55)
-}
-
-function buildOperationGateContext(doc, gate) {
-  if (!gate?.items?.length) return null
-
-  const primaryItem = gate.items[0]
-  const dayId = primaryItem.dayId || gate.dayId || 'thu'
-  const dayMeta = getDayMeta(dayId) || getCursorDay(gate.startSlot)
-  const theme = MISSION_LAUNCH_THEME[dayId] || MISSION_LAUNCH_THEME.fri
-  const briefing = DAY_BRIEFING_COPY[dayId] || DAY_BRIEFING_COPY.thu
-  const gateItemsWithType = gate.items.map((item) => ({ ...item, type: 'itineraryItem' }))
-  const linkedEntities = dedupeById(
-    gateItemsWithType.flatMap((item) => getLinkedEntities(doc, item)),
-  )
-  const relatedTravelItems = getRelatedTravelItemsForGate(doc, gate)
-  const relatedRoutes = dedupeById(
-    relatedTravelItems
-      .map((item) => getRouteForEntity(doc, { ...item, type: 'itineraryItem' }))
-      .filter(Boolean),
-  )
-  const gateLocations = dedupeById(
-    [
-      getLocationForEntity(doc, { ...primaryItem, type: 'itineraryItem' }),
-      ...linkedEntities.filter((entity) => entity.type === 'location'),
-      ...relatedRoutes
-        .map((route) => getEntityById(doc, 'location', route.destinationLocationId))
-        .filter(Boolean),
-    ].filter(Boolean),
-  )
-  const targetLocation = pickMostFrequentEntity(gateLocations)
-  const familyIds = [
-    ...gate.items.flatMap((item) => item.familyIds || []),
-    ...relatedTravelItems.flatMap((item) => item.familyIds || []),
-    ...relatedRoutes.map((route) => route.familyId).filter((familyId) => familyId && familyId !== 'all'),
-  ]
-  const families = dedupeById(
-    familyIds
-      .map((familyId) => getEntityById(doc, 'family', familyId))
-      .filter(Boolean),
-  )
-  const unitCount = families.length || Math.max(relatedRoutes.length, 1)
-  const launchLabel = stripDayPrefix(getSlotLabel(gate.startSlot))
-  const etaSlot = relatedTravelItems.length
-    ? Math.max(...relatedTravelItems.map((item) => item.startSlot + getItineraryItemEffectiveSpan(doc, item)))
-    : gate.startSlot + getItineraryItemEffectiveSpan(doc, primaryItem)
-  const etaLabel = stripDayPrefix(getSlotLabel(etaSlot))
-  const participantLabel =
-    !families.length
-      ? gate.dayLabel || 'All units'
-      : families.length === doc.families.length
-        ? 'All families'
-        : formatNameList(families.map((family) => family.title))
-  const targetTitle = targetLocation?.title || gate.title
-  const targetMeta = targetLocation ? getEntitySummary(targetLocation) : primaryItem.status || gate.subtitle
-  const routeCount = relatedRoutes.length || Math.max(relatedTravelItems.length, 1)
-  const deploymentLabel = targetLocation
-    ? `${participantLabel} deploying to ${targetTitle}.`
-    : `${participantLabel} moving on ${gate.title}.`
-  const objective = MISSION_OBJECTIVE_COPY[dayId] || `Advance ${participantLabel.toLowerCase()} into ${gate.title.toLowerCase()}.`
-
-  return {
-    dayId,
-    dayMeta,
-    theme,
-    title: gate.title,
-    operationLabel: gate.subtitle || 'Primary operation',
-    code: briefing.code,
-    targetTitle,
-    targetMeta,
-    deploymentLabel,
-    objective,
-    launchLabel,
-    etaLabel,
-    unitCount,
-    routeCount,
-    families,
-    briefingSummary: briefing.summary,
-  }
-}
-
-function buildOperationCheckpoints(doc) {
-  return DAYS.map((day, dayIndex) => {
-    const mainOp = doc.itineraryItems
-      .filter((item) => item.rowId === 'activities' && item.dayId === day.id)
-      .sort((left, right) => left.startSlot - right.startSlot)[0]
-
-    if (!mainOp) return null
-
-    return {
-      id: `op:main-op:${day.id}:${mainOp.id}`,
-      dayId: day.id,
-      startSlot: Math.max(mainOp.startSlot, getMissionLaunchCursor(dayIndex)),
-      title: mainOp.title,
-      subtitle: 'Primary operation',
-      dayLabel: day.title,
-      items: [mainOp],
-      type: 'main-op',
-      autoAdvanceMs: 4200,
-    }
-  }).filter(Boolean)
-}
-
-function findUpcomingOperationCheckpoint(checkpoints, cursorSlot, threshold = 0.14) {
-  return checkpoints.find((item) => item.startSlot >= cursorSlot && item.startSlot - cursorSlot <= threshold) || null
-}
-
-function findCrossedOperationCheckpoint(checkpoints, previousCursor, nextCursor, triggeredIds) {
-  return checkpoints.find((item) =>
-    !triggeredIds.has(item.id)
-    && previousCursor <= item.startSlot
-    && nextCursor >= item.startSlot,
-  ) || null
-}
-
-function getPlaybackHighlightLocation(doc, context) {
-  return null
-}
-
-function buildDailyBriefing(doc, context) {
-  const day = getCursorDay(context.cursorSlot)
-  const base = DAY_BRIEFING_COPY[day.id] || DAY_BRIEFING_COPY.thu
-  const meals = doc.meals.filter((meal) => meal.dayId === day.id).slice(0, 3)
-  const activities = doc.activities.filter((activity) => activity.dayId === day.id).slice(0, 3)
-  const tasks = getTasksForDay(doc, day.id).filter((task) => task.status !== 'done').slice(0, 4)
-  const liveItems = context.liveEntities.filter((item) => item.dayId === day.id)
-  const soonItems = [...context.nextEntities, ...context.prepSoon]
-    .filter((item) => item.dayId === day.id)
-    .slice(0, 4)
-
-  return {
-    day,
-    code: base.code,
-    tone: base.tone,
-    summary: base.summary,
-    lookouts: base.lookouts,
-    meals,
-    activities,
-    tasks,
-    liveItems,
-    soonItems,
-  }
-}
-
-function StatusPill({ children, tone = 'Transit', className }) {
   return (
-    <span
+    <div
       className={cn(
-        'rounded-[2px] px-2 py-0.5 text-[9px] font-black uppercase tracking-wider',
-        STATUS_STYLES[tone] || 'bg-[#30363D] text-[#C9D1D9]',
-        className,
+        'border px-2 py-0.5 text-[9px] font-black uppercase tracking-widest',
+        styles[tone] || styles.Pending,
       )}
     >
       {children}
-    </span>
+    </div>
   )
 }
 
 function SectionTitle({ eyebrow, title, meta }) {
   return (
     <div className="mb-4">
-      {eyebrow ? (
-        <div className="mb-1 text-[9px] font-black uppercase tracking-[0.2em] text-[#58A6FF]">
-          {eyebrow}
-        </div>
-      ) : null}
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-[13px] font-black uppercase tracking-[0.12em] text-[#C9D1D9]">
-          {title}
-        </h2>
-        {meta ? <div className="text-[10px] font-bold text-[#8B949E]">{meta}</div> : null}
+      {eyebrow && <div className="text-[9px] font-black uppercase tracking-[0.25em] text-[#58A6FF]">{eyebrow}</div>}
+      <div className="mt-0.5 flex items-baseline justify-between gap-4">
+        <h3 className="text-[14px] font-black uppercase tracking-wider text-[#C9D1D9]">{title}</h3>
+        {meta && <span className="text-[10px] lowercase italic text-[#8B949E]">{meta}</span>}
       </div>
+    </div>
+  )
+}
+
+function InfoRow({ icon: Icon, label, value, muted }) {
+  return (
+    <div className="flex items-start gap-3">
+      <div className={cn('mt-0.5', muted ? 'text-[#484f58]' : 'text-[#8B949E]')}>
+        <Icon size={12} />
+      </div>
+      <div>
+        <div className="text-[9px] font-bold uppercase tracking-widest text-[#8B949E]">{label}</div>
+        <div className={cn('mt-0.5 text-[11px] leading-relaxed', muted ? 'text-[#8B949E]' : 'text-[#C9D1D9]')}>
+          {value || 'Not specified'}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function IntelAction({ icon: Icon, label, onClick, tone = 'blue' }) {
+  const styles = {
+    blue: 'border-[#58A6FF]/30 bg-[#58A6FF]/5 text-[#58A6FF] hover:bg-[#58A6FF]/15',
+    amber: 'border-[#D29922]/30 bg-[#D29922]/5 text-[#D29922] hover:bg-[#D29922]/15',
+  }
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex items-center gap-2 border px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-colors',
+        styles[tone],
+      )}
+    >
+      <Icon size={11} />
+      <span>{label}</span>
+    </button>
+  )
+}
+
+function SelectableCard({ children, selected, onClick, className }) {
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onClick?.()
+        }
+      }}
+      className={cn(
+        'cursor-pointer border transition-all',
+        selected ? 'border-[#58A6FF] bg-[#24313d]/50' : 'border-[#30363D] bg-[#161b22] hover:border-[#484f58]',
+        className,
+      )}
+    >
+      {children}
     </div>
   )
 }
@@ -783,49 +195,59 @@ function SectionTitle({ eyebrow, title, meta }) {
 function NotesBox({ value, onChange, placeholder }) {
   return (
     <textarea
-      value={value}
+      value={value || ''}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
-      className="min-h-24 w-full resize-none border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[11px] leading-relaxed text-[#C9D1D9] outline-none focus:border-[#58A6FF]"
+      className="w-full border border-[#30363D] bg-[#0d1117] p-3 text-[11px] leading-relaxed text-[#C9D1D9] focus:border-[#58A6FF] outline-none transition-colors"
+      rows={4}
     />
-  )
-}
-
-function SelectableCard({ selected, onClick, children, className = '' }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'w-full border text-left transition-colors hover:border-[#58A6FF]/40 hover:bg-[#1f2a34]/40',
-        selected ? 'border-[#58A6FF] bg-[#24313d]/60' : 'border-[#30363D] bg-[#161b22]',
-        className,
-      )}
-    >
-      {children}
-    </button>
   )
 }
 
 function PageNotesCard({ title, value, onChange, onConvert, placeholder }) {
   return (
-    <div className="border border-[#30363D] bg-[#161b22] p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#8B949E]">{title}</div>
-        <button
-          type="button"
-          onClick={onConvert}
-          className="text-[9px] font-black uppercase tracking-wider text-[#58A6FF]"
-        >
-          note to task
-        </button>
+    <div className="border border-[#30363D] bg-[#161b22] p-5">
+      <div className="mb-4 flex items-center justify-between">
+        <SectionTitle eyebrow="Intel" title={title} />
+        {value?.trim() ? (
+          <button
+            type="button"
+            onClick={onConvert}
+            className="flex items-center gap-2 border border-[#30363D] bg-[#0d1117] px-3 py-1.5 text-[9px] font-black uppercase tracking-widest text-[#8B949E] hover:border-[#58A6FF]/40 hover:text-[#58A6FF]"
+          >
+            <CheckSquare size={10} />
+            Convert to task
+          </button>
+        ) : null}
       </div>
       <NotesBox value={value} onChange={onChange} placeholder={placeholder} />
     </div>
   )
 }
 
+function FamilyList({ doc, selection, onSelectEntity }) {
+  return (
+    <div className="mt-4 space-y-2">
+      {doc.families.map((family) => (
+        <SelectableCard
+          key={family.id}
+          selected={selection.type === 'family' && selection.id === family.id}
+          onClick={() => onSelectEntity('family', family.id)}
+          className="flex items-center justify-between px-4 py-3"
+        >
+          <div className="flex flex-col">
+            <span className="text-[11px] font-black uppercase tracking-widest text-[#C9D1D9]">{family.title}</span>
+            <span className="text-[10px] text-[#8B949E]">{family.origin}</span>
+          </div>
+          <StatusPill tone={family.status}>{family.status}</StatusPill>
+        </SelectableCard>
+      ))}
+    </div>
+  )
+}
+
 function AppShell({
+  children,
   doc,
   onSetSelectedPage,
   onExport,
@@ -835,1443 +257,268 @@ function AppShell({
   families,
   activeFamily,
   onSetActiveFamily,
-  children,
 }) {
-  return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-[#0d1117] font-sans text-[#C9D1D9] antialiased">
-      <div className="flex w-16 flex-col border-r border-[#30363D] bg-[#0d1117]">
-        <div className="flex h-14 items-center justify-center border-b border-[#30363D] text-[#58A6FF]">
-          <img
-            src={palantirLogo}
-            alt="Palantir"
-            className="h-4 w-auto opacity-90"
-            style={{ filter: 'invert(1) grayscale(1) brightness(1.15)' }}
-          />
-        </div>
-        {NAV_ITEMS.map((item) => {
-          const Icon = PAGE_ICONS[item.id]
-          const active = doc.selectedPage === item.id
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => onSetSelectedPage(item.id)}
-              className={cn(
-                'flex items-center justify-center border-l-2 px-3 py-3.5 transition-colors',
-                active
-                  ? 'border-[#58A6FF] bg-[#24313d] text-[#58A6FF]'
-                  : 'border-transparent text-[#8B949E] hover:bg-[#1f2a34] hover:text-[#C9D1D9]',
-              )}
-              title={item.label}
-            >
-              <Icon size={22} strokeWidth={1.6} />
-            </button>
-          )
-        })}
-        <div className="mt-auto border-t border-[#30363D]">
-          <button
-            type="button"
-            onClick={onExport}
-            className="flex w-full items-center justify-center px-3 py-3.5 text-[#8B949E] transition-colors hover:bg-[#1f2a34] hover:text-[#C9D1D9]"
-            title="Export trip state"
-          >
-            <Download size={20} strokeWidth={1.6} />
-          </button>
-          <button
-            type="button"
-            className="flex w-full items-center justify-center px-3 py-3.5 text-[#8B949E] transition-colors hover:bg-[#1f2a34] hover:text-[#C9D1D9]"
-            title="Messages"
-          >
-            <MessageSquare size={20} strokeWidth={1.6} />
-          </button>
-          <button
-            type="button"
-            className="flex w-full items-center justify-center px-3 py-3.5 text-[#8B949E] transition-colors hover:bg-[#1f2a34] hover:text-[#C9D1D9]"
-            title="Settings"
-          >
-            <Settings size={20} strokeWidth={1.6} />
-          </button>
-        </div>
-      </div>
+  const [showAccountMenu, setShowAccountMenu] = useState(false)
+  const [showSearch, setShowSearch] = useState(false)
+  const searchInputRef = useRef(null)
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex h-12 items-center justify-between border-b border-[#30363D] bg-[#161b22] px-6">
-          <div className="flex items-center gap-6">
-            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[#3FB950]">
-              UNCLASSIFIED // FAMILY OPS
-            </div>
-            <div className="h-5 w-px bg-[#30363D]" />
-            <div className="text-[10px] font-bold uppercase tracking-widest text-[#8B949E]">
-              {TRIP_META.commandName}
-            </div>
-          </div>
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'k') {
+        event.preventDefault()
+        setShowSearch(true)
+      } else if (event.key === 'Escape') {
+        setShowSearch(false)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  useEffect(() => {
+    if (showSearch) {
+      searchInputRef.current?.focus()
+    }
+  }, [showSearch])
+
+  return (
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-[#0d1117] font-sans antialiased selection:bg-[#58A6FF]/30">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-[#30363D] bg-[#0d1117] px-6">
+        <div className="flex items-center gap-8">
           <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <div className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
-                Working as
-              </div>
-              <div className="flex items-center gap-1.5">
-                {families.map((family) => (
-                  <button
-                    key={family.id}
-                    type="button"
-                    onClick={() => onSetActiveFamily(family.id)}
-                    className={cn(
-                      'border px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.14em]',
-                      activeFamily?.id === family.id
-                        ? 'border-[#58A6FF]/50 bg-[#58A6FF]/12 text-[#C9D1D9]'
-                        : 'border-[#30363D] bg-[#0d1117] text-[#8B949E]',
-                    )}
-                  >
-                    {family.title}
-                  </button>
-                ))}
-              </div>
+            <div className="flex h-8 w-8 items-center justify-center border border-[#58A6FF] bg-[#58A6FF]/10">
+              <Shield className="text-[#58A6FF]" size={18} />
             </div>
-            <div className="rounded-[2px] border border-[#30363D] bg-[#0d1117] px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-[#58A6FF]">
-              autosave live
-            </div>
-            <div className="relative">
-              <Search
-                size={14}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-[#8B949E]"
-              />
-              <input
-                type="text"
-                value={doc.ui.searchQuery}
-                onChange={(event) => onSearchChange(event.target.value)}
-                placeholder="Search..."
-                className="w-64 rounded-[2px] border border-[#30363D] bg-[#0d1117] py-1.5 pl-10 pr-4 text-[11px] outline-none focus:border-[#58A6FF]"
-              />
-              {doc.ui.searchQuery && searchResults.length ? (
-                <div className="absolute right-0 top-10 z-40 w-80 border border-[#30363D] bg-[#161b22] shadow-xl">
-                  {searchResults.map((item) => (
-                    <button
-                      key={`${item.type}:${item.id}`}
-                      type="button"
-                      onClick={() => onOpenEntity(item.type, item.id)}
-                      className="flex w-full items-center justify-between border-b border-[#30363D]/40 px-3 py-2 text-left last:border-b-0 hover:bg-[#1f2a34]/60"
-                    >
-                      <div>
-                        <div className="text-[11px] font-bold text-[#C9D1D9]">{getEntityTitle(item)}</div>
-                        <div className="text-[10px] text-[#8B949E]">{getEntitySummary(item)}</div>
-                      </div>
-                      <div className="text-[9px] font-black uppercase tracking-wider text-[#58A6FF]">
-                        {item.type}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          {children}
-        </div>
-      </div>
-
-      {!activeFamily ? (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#0b0f14]/86 backdrop-blur-sm">
-          <div className="w-[420px] border border-[#30363D] bg-[#161b22] p-6 shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
-            <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#58A6FF]">
-              Family Profile
-            </div>
-            <div className="text-[18px] font-black uppercase tracking-[0.08em] text-[#E6EDF3]">
-              Choose your family
-            </div>
-            <div className="mt-2 text-[12px] leading-relaxed text-[#8B949E]">
-              This stays local in your browser, personalizes the planner to your family, and attributes edits and new expenses to you.
-            </div>
-            <div className="mt-5 grid gap-2">
-              {families.map((family) => (
-                <button
-                  key={family.id}
-                  type="button"
-                  onClick={() => onSetActiveFamily(family.id)}
-                  className="flex items-center justify-between border border-[#30363D] bg-[#0d1117] px-4 py-3 text-left transition-colors hover:border-[#58A6FF]/40 hover:bg-[#1f2a34]/50"
-                >
-                  <div>
-                    <div className="text-[12px] font-black uppercase tracking-[0.12em] text-[#C9D1D9]">
-                      {family.title}
-                    </div>
-                    <div className="mt-1 text-[10px] text-[#8B949E]">
-                      {family.shortOrigin} inbound · {family.headcount}
-                    </div>
-                  </div>
-                  <ArrowRight size={14} className="text-[#58A6FF]" />
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-function FamilyList({ doc, selection, onSelectEntity }) {
-  return (
-    <div className="overflow-hidden border border-[#30363D] bg-[#0d1117]">
-      {doc.families.map((family) => {
-        const selected = selection.type === 'family' && selection.id === family.id
-        return (
-          <button
-            key={family.id}
-            type="button"
-            onClick={() => onSelectEntity('family', family.id)}
-            className={cn(
-              'flex w-full items-start justify-between gap-3 border-b border-[#30363D]/50 px-4 py-3 text-left last:border-b-0',
-              selected ? 'bg-[#24313d] shadow-[inset_4px_0_0_#58A6FF]' : 'hover:bg-[#1f2a34]/60',
-            )}
-          >
             <div>
-              <div className="mb-1 text-[11px] font-bold uppercase tracking-widest text-[#C9D1D9]">
-                {family.title}
+              <div className="text-[11px] font-black uppercase tracking-[0.3em] text-[#C9D1D9]">
+                {doc.ui.commandName.toUpperCase()}
               </div>
-              <div className="text-[10px] font-medium text-[#8B949E]">
-                {family.shortOrigin} inbound, {family.headcount}
+              <div className="mt-0.5 text-[9px] font-bold uppercase tracking-widest text-[#8B949E]">
+                Operational Surface // V1.0.4RC
               </div>
             </div>
-            <StatusPill tone={family.status}>{family.status}</StatusPill>
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-function ScenarioControls({ doc, cursorSlot = doc.ui.timeline.cursorSlot, onSetCursor }) {
-  const clampedCursor = clampTimelineCursor(cursorSlot)
-  const cursorDayIndex = Math.min(Math.max(Math.floor(clampedCursor / TIME_SLOTS.length), 0), DAYS.length - 1)
-  const selectedDay = DAYS[cursorDayIndex]
-  const cursorHour = getCursorHourInDay(clampedCursor)
-  const selectedHour = MISSION_TIME_PRESETS.reduce((bestHour, hour) => (
-    Math.abs(hour - cursorHour) < Math.abs(bestHour - cursorHour) ? hour : bestHour
-  ), MISSION_TIME_PRESETS[0])
-  const selectedSlotValue = String(selectedHour).padStart(2, '0')
-
-  return (
-    <div className="border border-[#30363D] bg-[#161b22] p-4">
-      <div className="mb-3 flex items-center justify-between gap-3">
-        <div>
-          <div className="text-[9px] font-black uppercase tracking-[0.18em] text-[#58A6FF]">
-            Scenario Mode
           </div>
-          <div className="mt-1 text-[12px] font-black uppercase tracking-[0.12em] text-[#C9D1D9]">
-            Time scrub
-          </div>
-        </div>
-        <div className="rounded-[2px] border border-[#30363D] bg-[#0d1117] px-2 py-1 text-[9px] font-black uppercase tracking-wider text-[#8B949E]">
-          {selectedDay.shortLabel} {selectedSlotValue}
-        </div>
-      </div>
-      <div className="mb-3 flex flex-wrap gap-2">
-        {DAYS.map((day, dayIndex) => (
-          <button
-            key={day.id}
-            type="button"
-            onClick={() => onSetCursor(dayIndex * TIME_SLOTS.length + selectedHour / TIMELINE_HOURS_PER_SLOT)}
-            className={cn(
-              'border px-2.5 py-1 text-[9px] font-black uppercase tracking-wider',
-              day.id === selectedDay.id
-                ? 'border-[#58A6FF] bg-[#58A6FF]/10 text-[#58A6FF]'
-                : 'border-[#30363D] bg-[#0d1117] text-[#8B949E]',
-            )}
-          >
-            {day.shortLabel}
-          </button>
-        ))}
-      </div>
-      <div className="flex gap-2">
-        {MISSION_TIME_PRESETS.map((hour) => {
-          const slot = String(hour).padStart(2, '0')
-          return (
-            <button
-              key={slot}
-              type="button"
-              onClick={() => onSetCursor(cursorDayIndex * TIME_SLOTS.length + hour / TIMELINE_HOURS_PER_SLOT)}
-              className={cn(
-                'flex-1 border px-2 py-2 text-[10px] font-mono',
-                slot === selectedSlotValue
-                  ? 'border-[#58A6FF] bg-[#58A6FF]/10 text-[#58A6FF]'
-                  : 'border-[#30363D] bg-[#0d1117] text-[#8B949E]',
-              )}
-            >
-              {slot}
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
 
-function DailyBriefingModal({ briefing, onClose, onOpenEntity }) {
-  if (!briefing) return null
-
-  const toneStyles = {
-    Amber: 'border-[#D29922]/40 text-[#D29922]',
-    Blue: 'border-[#58A6FF]/40 text-[#58A6FF]',
-    Red: 'border-[#F85149]/40 text-[#F85149]',
-    Green: 'border-[#3FB950]/40 text-[#3FB950]',
-  }
-
-  const railSection = (title, items, emptyLabel) => (
-    <div className="border border-[#30363D] bg-[#0d1117]">
-      <div className="border-b border-[#30363D]/50 px-4 py-3 text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
-        {title}
-      </div>
-      <div className="p-4">
-        {items.length ? (
-          <div className="space-y-2">
-            {items.map((item) => (
+          <nav className="flex items-center gap-1.5 rounded-sm border border-[#30363D] bg-[#161b22] px-1 py-1">
+            {[
+              { id: 'itinerary', label: 'Timeline', icon: Clock },
+              { id: 'stay', label: 'Basecamp', icon: Home },
+              { id: 'meals', label: 'Logistics', icon: Utensils },
+              { id: 'activities', label: 'Missions', icon: Zap },
+              { id: 'expenses', label: 'Ledger', icon: DollarSign },
+              { id: 'families', label: 'Travel Units', icon: Users },
+            ].map((page) => (
               <button
-                key={`${item.type}:${item.id}`}
+                key={page.id}
                 type="button"
-                onClick={() => onOpenEntity(item.type, item.id)}
-                className="flex w-full items-start justify-between gap-3 border border-[#30363D] bg-[#161b22] px-3 py-3 text-left transition-colors hover:border-[#58A6FF]/40"
+                onClick={() => onSetSelectedPage(page.id)}
+                className={cn(
+                  'flex items-center gap-2 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider transition-all',
+                  doc.selectedPage === page.id
+                    ? 'bg-[#58A6FF] text-[#0d1117] shadow-[0_0_12px_rgba(88,166,255,0.4)]'
+                    : 'text-[#8B949E] hover:bg-[#30363D]/40 hover:text-[#C9D1D9]',
+                )}
               >
-                <div className="min-w-0">
-                  <div className="text-[11px] font-bold text-[#C9D1D9]">{getEntityTitle(item)}</div>
-                  <div className="mt-1 text-[10px] leading-relaxed text-[#8B949E]">{getEntitySummary(item)}</div>
-                </div>
-                {'status' in item && item.status ? <StatusPill tone={item.status}>{item.status}</StatusPill> : null}
+                <page.icon size={13} strokeWidth={2.5} />
+                <span>{page.label}</span>
               </button>
             ))}
-          </div>
-        ) : (
-          <div className="text-[11px] text-[#8B949E]">{emptyLabel}</div>
-        )}
-      </div>
-    </div>
-  )
+          </nav>
+        </div>
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-6 py-8 backdrop-blur-[2px]"
-      onClick={onClose}
-    >
-      <div
-        className="absolute inset-0 opacity-20"
-        style={{
-          backgroundImage:
-            'linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)',
-          backgroundSize: '100% 4px, 4px 100%',
-        }}
-      />
-      <div
-        className="relative max-h-full w-full max-w-5xl overflow-hidden border border-[#30363D] bg-[#10161e] shadow-[0_30px_80px_rgba(0,0,0,0.55)]"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="border-b border-[#30363D] bg-[linear-gradient(135deg,rgba(88,166,255,0.08),rgba(13,17,23,0.95)_58%)] px-6 py-5">
-          <div className="mb-4 flex items-start justify-between gap-4">
-            <div>
-              <div className="mb-2 text-[9px] font-black uppercase tracking-[0.22em] text-[#58A6FF]">
-                Daily Briefing
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <h2 className="text-[22px] font-black uppercase tracking-[0.14em] text-[#F0F6FC]">
-                  {briefing.day.title}
-                </h2>
-                <span className={`border px-2 py-1 text-[9px] font-black uppercase tracking-[0.18em] ${toneStyles[briefing.tone] || toneStyles.Blue}`}>
-                  {briefing.code}
+        <div className="flex items-center gap-4">
+          <button
+            type="button"
+            onClick={() => setShowSearch(true)}
+            className="flex items-center gap-3 border border-[#30363D] bg-[#161b22] px-4 py-2 text-[#8B949E] transition-colors hover:border-[#484f58] hover:text-[#C9D1D9]"
+          >
+            <Search size={14} />
+            <span className="text-[10px] uppercase tracking-widest">Universal Search</span>
+            <span className="rounded border border-[#30363D] px-1.5 py-0.5 text-[9px] font-mono">⌘K</span>
+          </button>
+
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowAccountMenu(!showAccountMenu)}
+              className={cn(
+                'flex items-center gap-3 border px-4 py-2 transition-all',
+                activeFamily
+                  ? 'border-[#3FB950]/40 bg-[#3FB950]/5 text-[#3FB950] hover:bg-[#3FB950]/12'
+                  : 'border-[#30363D] bg-[#161b22] text-[#8B949E] hover:border-[#484f58]',
+              )}
+            >
+              <div className="flex flex-col items-end">
+                <span className="text-[10px] font-black uppercase tracking-widest text-[#C9D1D9]">
+                  {activeFamily?.title || 'Assign profile'}
+                </span>
+                <span className="text-[8px] uppercase tracking-widest text-[#8B949E]">
+                  {activeFamily ? 'Operational Profile' : 'Not assigned'}
                 </span>
               </div>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex items-center gap-2 border border-[#30363D] bg-[#0d1117] px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40 hover:text-[#58A6FF]"
-            >
-              <X size={14} />
-              Close
+              <ChevronDown size={14} />
             </button>
-          </div>
 
-          <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
-            <div className="border border-[#30363D] bg-[#0d1117]/85 p-4">
-              <div className="mb-2 text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">Command summary</div>
-              <p className="text-[13px] leading-7 text-[#C9D1D9]">{briefing.summary}</p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1">
-              <div className="border border-[#30363D] bg-[#0d1117] p-4 text-center">
-                <div className="text-[8px] font-black uppercase tracking-widest text-[#8B949E]">Live now</div>
-                <div className="mt-2 text-[22px] font-black text-[#F0F6FC]">{briefing.liveItems.length}</div>
-              </div>
-              <div className="border border-[#30363D] bg-[#0d1117] p-4 text-center">
-                <div className="text-[8px] font-black uppercase tracking-widest text-[#8B949E]">Upcoming</div>
-                <div className="mt-2 text-[22px] font-black text-[#F0F6FC]">{briefing.soonItems.length}</div>
-              </div>
-              <div className="border border-[#30363D] bg-[#0d1117] p-4 text-center">
-                <div className="text-[8px] font-black uppercase tracking-widest text-[#8B949E]">Open tasks</div>
-                <div className="mt-2 text-[22px] font-black text-[#F0F6FC]">{briefing.tasks.length}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div className="grid max-h-[calc(100vh-220px)] gap-5 overflow-y-auto p-6 xl:grid-cols-[1.05fr_0.95fr]">
-          <div className="space-y-5">
-            <div className="border border-[#30363D] bg-[#161b22] p-4">
-              <SectionTitle eyebrow="Watch For" title="What matters today" />
-              <div className="space-y-3">
-                {briefing.lookouts.map((item) => (
-                  <div key={item} className="border border-[#30363D] bg-[#0d1117] px-3 py-3 text-[11px] leading-relaxed text-[#C9D1D9]">
-                    {item}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {railSection('Live surfaces', briefing.liveItems, 'Nothing is active yet for this day window.')}
-            {railSection('Coming up', briefing.soonItems, 'No immediate follow-ups are queued right now.')}
-          </div>
-
-          <div className="space-y-5">
-            <div className="border border-[#30363D] bg-[#161b22] p-4">
-              <SectionTitle eyebrow="Planned beats" title="Activities + meals" />
-              <div className="space-y-3">
-                {briefing.activities.map((activity) => (
-                  <button
-                    key={activity.id}
-                    type="button"
-                    onClick={() => onOpenEntity('activity', activity.id)}
-                    className="flex w-full items-start justify-between gap-3 border border-[#30363D] bg-[#0d1117] px-3 py-3 text-left transition-colors hover:border-[#58A6FF]/40"
+            <AnimatePresence>
+              {showAccountMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowAccountMenu(false)} />
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.95, y: -10 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95, y: -10 }}
+                    className="absolute right-0 top-full z-50 mt-2 w-64 border border-[#30363D] bg-[#161b22] p-1 shadow-2xl"
                   >
-                    <div>
-                      <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-[#C9D1D9]">{activity.title}</div>
-                      <div className="mt-1 text-[10px] text-[#8B949E]">{activity.window}</div>
+                    <div className="px-3 py-2 text-[9px] font-bold uppercase tracking-[0.2em] text-[#8B949E]">
+                      Select active unit
                     </div>
-                    <StatusPill tone={activity.status}>{activity.status}</StatusPill>
-                  </button>
-                ))}
-                {briefing.meals.map((meal) => (
-                  <button
-                    key={meal.id}
-                    type="button"
-                    onClick={() => onOpenEntity('meal', meal.id)}
-                    className="flex w-full items-start justify-between gap-3 border border-[#30363D] bg-[#0d1117] px-3 py-3 text-left transition-colors hover:border-[#58A6FF]/40"
-                  >
-                    <div>
-                      <div className="text-[11px] font-bold uppercase tracking-[0.08em] text-[#C9D1D9]">{meal.title}</div>
-                      <div className="mt-1 text-[10px] text-[#8B949E]">{meal.timeLabel}</div>
-                    </div>
-                    <StatusPill tone={meal.status}>{meal.status}</StatusPill>
-                  </button>
-                ))}
-                {!briefing.activities.length && !briefing.meals.length ? (
-                  <div className="text-[11px] text-[#8B949E]">No day-specific beats are attached yet.</div>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="border border-[#30363D] bg-[#161b22] p-4">
-              <SectionTitle eyebrow="Open loops" title="Tasks to keep in mind" />
-              <div className="space-y-2">
-                {briefing.tasks.length ? briefing.tasks.map((task) => (
-                  <button
-                    key={task.id}
-                    type="button"
-                    onClick={() => onOpenEntity('task', task.id)}
-                    className="w-full border border-[#30363D] bg-[#0d1117] px-3 py-3 text-left text-[11px] text-[#C9D1D9] transition-colors hover:border-[#58A6FF]/40"
-                  >
-                    {task.title}
-                  </button>
-                )) : (
-                  <div className="text-[11px] text-[#8B949E]">No open day-specific tasks. Good hunting.</div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function MissionLaunchModal({ doc, gate, remainingMs, onProceed, onAbort }) {
-  if (!gate) return null
-
-  const context = buildOperationGateContext(doc, gate)
-  if (!context) return null
-
-  const totalMs = gate.autoAdvanceMs || 4200
-  const progress = Math.min(Math.max(1 - remainingMs / totalMs, 0), 1)
-  const radius = 76
-  const circumference = 2 * Math.PI * radius
-  const strokeDashoffset = circumference * (1 - progress)
-  const countdownValue = Math.max(1, 3 - Math.min(2, Math.floor(progress * 3)))
-  const theme = context.theme
-  const statusCards = [
-    { label: 'Launch', value: context.launchLabel, icon: Flag },
-    { label: 'ETA', value: context.etaLabel, icon: Route },
-    { label: 'Units', value: `${context.unitCount}`, icon: Users },
-  ]
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-[#03070b]/28 px-6 py-8 backdrop-blur-[2px]">
-      <style>{MISSION_LAUNCH_KEYFRAMES}</style>
-      <div
-        className="absolute inset-0"
-        style={{
-          backgroundImage:
-            `radial-gradient(circle at 50% 42%, ${theme.accentGlow}, transparent 24%), linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(180deg, rgba(3,7,11,0.12), rgba(3,7,11,0.82))`,
-          backgroundSize: '100% 100%, 100% 9px, 9px 100%, 100% 100%',
-        }}
-      />
-      <div
-        className="relative w-full max-w-[720px] overflow-hidden border bg-[linear-gradient(180deg,rgba(7,11,17,0.86),rgba(4,8,13,0.94))] shadow-[0_30px_96px_rgba(0,0,0,0.62)]"
-        style={{
-          borderColor: theme.accentBorder,
-          boxShadow: `0 30px 96px rgba(0, 0, 0, 0.62), 0 0 0 1px ${theme.panelGlow}`,
-          animation: 'mission-launch-panel-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1)',
-        }}
-      >
-        <div
-          className="absolute inset-0"
-          style={{
-            backgroundImage: `linear-gradient(120deg, ${theme.accentSoft}, transparent 38%), radial-gradient(circle at 78% 18%, ${theme.panelGlow}, transparent 24%)`,
-          }}
-        />
-
-        <div className="relative border-b border-white/8 px-7 py-6">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <div className="text-[10px] font-black uppercase tracking-[0.28em]" style={{ color: theme.accentText }}>
-                {context.dayMeta?.title || gate.dayLabel} Mission Launch
-              </div>
-              <div className="mt-2 text-[12px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
-                {context.code}
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-5">
-            <div className="text-[32px] font-black uppercase tracking-[0.05em] text-[#F0F6FC] sm:text-[38px]">
-              {context.title}
-            </div>
-            <div className="mt-3 max-w-[560px] text-[14px] leading-relaxed text-[#C9D1D9]">
-              {context.deploymentLabel}
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {statusCards.map((card) => {
-                const Icon = card.icon
-                return (
-                  <div
-                    key={card.label}
-                    className="inline-flex items-center gap-2 border px-3 py-2 text-[11px] font-semibold text-[#F0F6FC]"
-                    style={{
-                      borderColor: theme.accentBorder,
-                      background: 'rgba(12, 17, 24, 0.72)',
-                    }}
-                  >
-                    <Icon size={12} style={{ color: theme.accentText }} />
-                    <span className="uppercase tracking-[0.14em] text-[#8B949E]">{card.label}</span>
-                    <span>{card.value}</span>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        </div>
-
-        <div className="relative grid gap-6 px-7 py-6 md:grid-cols-[200px_minmax(0,1fr)] md:items-center">
-          <div className="flex items-center justify-center">
-            <div
-              className="relative flex h-[190px] w-[190px] items-center justify-center rounded-full border"
-              style={{
-                borderColor: theme.accentBorder,
-                background: `radial-gradient(circle, ${theme.accentSoft}, rgba(8,12,18,0.12) 60%, transparent 75%)`,
-                animation: 'mission-launch-halo 2.6s ease-in-out infinite',
-              }}
-            >
-              <svg className="absolute inset-0 -rotate-90" viewBox="0 0 190 190">
-                <circle cx="95" cy="95" r={radius} fill="none" stroke="rgba(48,54,61,0.72)" strokeWidth="9" />
-                <circle
-                  cx="95"
-                  cy="95"
-                  r={radius}
-                  fill="none"
-                  stroke={theme.accentStrong}
-                  strokeWidth="9"
-                  strokeDasharray={circumference}
-                  strokeDashoffset={strokeDashoffset}
-                  strokeLinecap="round"
-                />
-              </svg>
-              <div className="absolute inset-[16px] rounded-full border border-white/8" />
-              <div className="relative text-center">
-                <div className="text-[8px] font-black uppercase tracking-[0.22em] text-[#8B949E]">Launch In</div>
-                <div
-                  key={countdownValue}
-                  className="mt-2 text-[78px] font-black leading-none text-[#F0F6FC]"
-                  style={{ animation: 'mission-launch-digit-in 220ms ease-out' }}
-                >
-                  {countdownValue}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="border border-white/8 bg-[#0b1118]/76 px-5 py-4 backdrop-blur-sm">
-              <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
-                <MapPin size={12} style={{ color: theme.accentText }} />
-                Target
-              </div>
-              <div className="mt-2 text-[20px] font-black uppercase tracking-[0.05em] text-[#F0F6FC]">
-                {context.targetTitle}
-              </div>
-              <div className="mt-3 text-[14px] leading-relaxed text-[#C9D1D9]">
-                {context.objective}
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={onAbort}
-                className="border px-4 py-3 text-[11px] font-black uppercase tracking-[0.18em] text-[#F0F6FC] transition-colors hover:border-[#F0F6FC]/30 hover:bg-white/6"
-                style={{
-                  borderColor: 'rgba(255,255,255,0.14)',
-                  background: 'rgba(13,17,23,0.78)',
-                }}
-              >
-                Abort
-              </button>
-              <button
-                type="button"
-                onClick={onProceed}
-                className="inline-flex items-center gap-2 border px-4 py-3 text-[11px] font-black uppercase tracking-[0.18em] transition-colors"
-                style={{
-                  borderColor: theme.accentBorder,
-                  background: theme.accentSoft,
-                  color: theme.accentStrong,
-                }}
-              >
-                Proceed Now
-                <ArrowRight size={14} />
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function MissionFeedTray({ items, onActivateItem }) {
-  if (!items.length) return null
-
-  return (
-    <div className="pointer-events-none absolute bottom-4 right-4 z-40 w-[320px]" aria-live="polite" aria-atomic="false">
-      <div className="pointer-events-auto flex max-h-[calc(100vh-2rem)] flex-col-reverse gap-2 overflow-y-auto pr-1">
-        {items.map((item) => {
-          const FeedIcon =
-            item.kind === 'departure'
-              ? CarFront
-              : item.kind === 'arrival'
-                ? Flag
-                : item.kind === 'onsite' && item.entityType === 'meal'
-                  ? Utensils
-                  : MapPin
-
-          return (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => onActivateItem(item)}
-              className={`w-full rounded-2xl border px-4 py-3 text-left shadow-[0_18px_40px_rgba(0,0,0,0.42)] backdrop-blur transition-all duration-500 ease-out ${
-                item.phase === 'fading'
-                  ? 'translate-y-2 opacity-0'
-                  : 'translate-y-0 opacity-100'
-              }`}
-              style={{
-                borderColor: `${item.tone}66`,
-                background: 'linear-gradient(180deg, rgba(17,22,29,0.96), rgba(11,16,24,0.94))',
-                boxShadow: `0 18px 40px rgba(0,0,0,0.42), 0 0 0 1px ${item.tone}22`,
-              }}
-            >
-              <div className="flex items-start gap-3">
-                <div
-                  className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border"
-                  style={{ borderColor: `${item.tone}66`, backgroundColor: `${item.tone}18`, color: item.tone }}
-                >
-                  <FeedIcon size={16} strokeWidth={2.2} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="truncate text-[9px] font-black uppercase tracking-[0.18em]" style={{ color: item.tone }}>
-                      {item.subtitle}
-                    </div>
-                  </div>
-                  <div className="mt-1 truncate text-[13px] font-black uppercase tracking-[0.06em] text-[#F0F6FC]">
-                    {item.title}
-                  </div>
-                  <div className="mt-1 truncate text-[10px] uppercase tracking-[0.14em] text-[#8B949E]">
-                    {item.caption}
-                  </div>
-                </div>
-              </div>
-            </button>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function SituationBoard({ context, onOpenEntity, onOpenBriefing }) {
-  const sections = [
-    { title: 'Live now', items: context.liveEntities, emptyLabel: 'Nothing active in this window.' },
-    { title: 'Coming up', items: [...context.nextEntities, ...context.prepSoon].slice(0, 4), emptyLabel: 'No immediate follow-ups.' },
-  ]
-
-  return (
-    <div className="border border-[#30363D] bg-[#161b22]">
-      <div className="border-b border-[#30363D] bg-[#1f2a34]/30 p-5">
-        <div className="mb-2 text-[9px] font-black uppercase tracking-[0.22em] text-[#58A6FF]">
-          Current situation
-        </div>
-        <div className="text-[18px] font-black text-[#F0F6FC]">{context.cursorLabel}</div>
-        <div className="mt-1 text-[11px] text-[#8B949E]">
-          {context.liveEntities.length
-            ? `${context.liveEntities.length} live item${context.liveEntities.length > 1 ? 's' : ''} in motion`
-            : 'No live items in this window'}
-        </div>
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          <div className="border border-[#30363D] bg-[#0d1117] px-3 py-2 text-center">
-            <div className="text-[8px] font-black uppercase tracking-widest text-[#8B949E]">Live</div>
-            <div className="mt-1 text-[13px] font-black text-[#C9D1D9]">{context.liveEntities.length}</div>
-          </div>
-          <div className="border border-[#30363D] bg-[#0d1117] px-3 py-2 text-center">
-            <div className="text-[8px] font-black uppercase tracking-widest text-[#8B949E]">Soon</div>
-            <div className="mt-1 text-[13px] font-black text-[#C9D1D9]">
-              {context.nextEntities.length + context.prepSoon.length}
-            </div>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={onOpenBriefing}
-          className="mt-4 flex w-full items-center justify-center border border-[#58A6FF]/30 bg-[#58A6FF]/10 px-4 py-3 text-[10px] font-black uppercase tracking-[0.22em] text-[#58A6FF] transition-colors hover:border-[#58A6FF] hover:bg-[#58A6FF]/14"
-        >
-          Daily briefing
-        </button>
-      </div>
-
-      <div className="space-y-4 p-4">
-        {sections.map((section) => (
-          <div key={section.title}>
-            <div className="mb-2 text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
-              {section.title}
-            </div>
-            <div className="overflow-hidden border border-[#30363D] bg-[#0d1117]">
-              {section.items.length ? section.items.map((item) => (
-                <button
-                  key={`${item.type}:${item.id}`}
-                  type="button"
-                  onClick={() => onOpenEntity(item.type, item.id)}
-                  className="flex w-full items-start justify-between gap-3 border-b border-[#30363D]/30 px-4 py-3 text-left last:border-b-0 hover:bg-[#1f2a34]/40"
-                >
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-bold text-[#C9D1D9]">{getEntityTitle(item)}</div>
-                    <div className="mt-1 text-[10px] leading-relaxed text-[#8B949E]">
-                      {getEntitySummary(item)}
-                    </div>
-                  </div>
-                  {'status' in item && item.status ? <StatusPill tone={item.status}>{item.status}</StatusPill> : null}
-                </button>
-              )) : (
-                <div className="px-4 py-3 text-[11px] text-[#8B949E]">{section.emptyLabel}</div>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function TimelineBoard({
-  doc,
-  selection,
-  onSelectEntity,
-  onSetCursor,
-  weatherDays,
-  cursorSlot = doc.ui.timeline.cursorSlot,
-  isPlaying = false,
-  playbackSpeed = 1,
-  onTogglePlayback,
-  onRestartPlayback,
-  onSetPlaybackSpeed,
-}) {
-  const days = weatherDays?.length ? weatherDays : DAYS
-  const totalVisibleSlots = days.length * VISIBLE_TIMELINE_SLOT_SPAN
-  const visibleHoursPerDay = VISIBLE_TIMELINE_END_HOUR - VISIBLE_TIMELINE_START_HOUR
-  const timelineRef = useRef(null)
-  const draggingRef = useRef(false)
-  const [liveNow, setLiveNow] = useState(() => new Date())
-  const [hoverCursorSlot, setHoverCursorSlot] = useState(null)
-  const rowHeights = {
-    travel: 72,
-    activities: 44,
-    support: 44,
-  }
-  const rows = [
-    { id: 'travel', label: 'Transit' },
-    { id: 'activities', label: 'Main Ops' },
-    { id: 'support', label: 'Support' },
-  ]
-  const rowLayouts = rows.map((row, index) => ({
-    ...row,
-    height: rowHeights[row.id] || 40,
-    top: rows.slice(0, index).reduce((sum, item) => sum + (rowHeights[item.id] || 40), 0),
-  }))
-  const timelineHeight = rowLayouts.reduce((sum, row) => sum + row.height, 0)
-  const familyLaneMap = new Map(doc.families.map((family, index) => [family.id, index]))
-  const actualTimelineRatio = projectCursorToVisibleTimelineRatio(getCurrentTripCursor(liveNow), days.length)
-  const actualNowLabel = `${liveNow.toLocaleDateString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric' })} ${liveNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
-  const hoverCursorLabel = hoverCursorSlot == null ? null : getSlotLabel(hoverCursorSlot)
-  const cursorRatio = projectCursorToVisibleTimelineRatio(cursorSlot, days.length)
-
-  useEffect(() => {
-    const timerId = window.setInterval(() => setLiveNow(new Date()), 60 * 1000)
-    return () => window.clearInterval(timerId)
-  }, [])
-
-  const scrubToClientX = useCallback((clientX) => {
-    if (!timelineRef.current) return null
-    const bounds = timelineRef.current.getBoundingClientRect()
-    const ratio = Math.min(Math.max((clientX - bounds.left) / bounds.width, 0), 0.999999)
-    return projectVisibleTimelineRatioToCursor(ratio, days.length)
-  }, [days.length])
-
-  useEffect(() => {
-    const handlePointerUp = () => {
-      draggingRef.current = false
-    }
-
-    window.addEventListener('mouseup', handlePointerUp)
-    return () => window.removeEventListener('mouseup', handlePointerUp)
-  }, [])
-
-  return (
-    <div className="shrink-0 border-t border-[#30363D] bg-[#161b22] shadow-[0_-8px_24px_rgba(0,0,0,0.35)]">
-      <div className="flex h-14 border-b border-[#30363D]/50">
-        <div className="flex w-28 flex-col justify-center gap-1 border-r border-[#30363D] bg-[#0d1117]/50 px-2">
-          <div className="flex items-center justify-center gap-1">
-            <button
-              type="button"
-              onClick={onTogglePlayback}
-              className="inline-flex h-7 w-7 items-center justify-center border border-[#58A6FF]/40 bg-[#58A6FF]/10 text-[#58A6FF] transition-colors hover:border-[#58A6FF]"
-              title={isPlaying ? 'Pause playback' : 'Play playback'}
-            >
-              {isPlaying ? <Pause size={13} /> : <Play size={13} className="translate-x-[1px]" />}
-            </button>
-            <button
-              type="button"
-              onClick={onRestartPlayback}
-              className="inline-flex h-7 w-7 items-center justify-center border border-[#30363D] bg-[#0d1117] text-[#8B949E] transition-colors hover:border-[#58A6FF]/40 hover:text-[#C9D1D9]"
-              title="Restart playback from trip start"
-            >
-              <RotateCcw size={13} />
-            </button>
-          </div>
-          <div className="flex items-center justify-center gap-1">
-            <Gauge size={10} className="text-[#8B949E]" />
-            <button
-              type="button"
-              onClick={() => {
-                const currentIndex = PLAYBACK_SPEED_OPTIONS.indexOf(playbackSpeed)
-                const nextSpeed = PLAYBACK_SPEED_OPTIONS[(currentIndex + 1) % PLAYBACK_SPEED_OPTIONS.length]
-                onSetPlaybackSpeed?.(nextSpeed)
-              }}
-              className="text-[9px] font-black uppercase tracking-[0.16em] text-[#8B949E] transition-colors hover:text-[#C9D1D9]"
-            >
-              {playbackSpeed}x
-            </button>
-          </div>
-        </div>
-        <div className="flex flex-1 divide-x divide-[#30363D]/30">
-          {days.map((day) => {
-            const WeatherIcon = WEATHER_ICONS[day.weatherIconKey] || Cloud
-            return (
-              <div key={day.id} className="flex flex-1 items-center gap-3 px-4">
-                <WeatherIcon size={18} className="text-[#58A6FF]" />
-                <div>
-                  <div className="text-[9px] font-black uppercase tracking-tighter text-[#8B949E]">
-                    {day.weather}
-                  </div>
-                  <div className="text-[11px] font-bold text-[#C9D1D9]">{day.temperature}</div>
-                  {day.weatherLocation ? (
-                    <div className="text-[9px] text-[#8B949E]">{day.weatherLocation}</div>
-                  ) : null}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      <div className="flex" style={{ height: `${timelineHeight}px` }}>
-        <div className="flex w-28 flex-col border-r border-[#30363D] bg-[#0d1117]/50">
-          {rowLayouts.map((row) => (
-            <div
-              key={row.id}
-              className="flex items-center justify-center border-b border-[#30363D]/30 px-2 text-center text-[9px] font-black uppercase tracking-widest text-[#8B949E] last:border-b-0"
-              style={{ height: `${row.height}px` }}
-            >
-              {row.label}
-            </div>
-          ))}
-        </div>
-
-        <div
-          ref={timelineRef}
-          className="relative flex-1 overflow-hidden cursor-col-resize"
-          style={{ height: `${timelineHeight}px` }}
-          onMouseLeave={() => {
-            if (!draggingRef.current) setHoverCursorSlot(null)
-          }}
-          onMouseDown={(event) => {
-            draggingRef.current = true
-            const nextCursorSlot = scrubToClientX(event.clientX)
-            if (nextCursorSlot != null) {
-              setHoverCursorSlot(nextCursorSlot)
-              onSetCursor?.(nextCursorSlot)
-            }
-          }}
-          onMouseMove={(event) => {
-            const nextCursorSlot = scrubToClientX(event.clientX)
-            if (nextCursorSlot == null) return
-            setHoverCursorSlot(nextCursorSlot)
-            if (draggingRef.current) {
-              onSetCursor?.(nextCursorSlot)
-            }
-          }}
-          onClick={(event) => {
-            const nextCursorSlot = scrubToClientX(event.clientX)
-            if (nextCursorSlot != null) {
-              onSetCursor?.(nextCursorSlot)
-            }
-          }}
-        >
-          <div className="absolute inset-0">
-            {Array.from({ length: days.length * visibleHoursPerDay + 1 }).map((_, index) => {
-              const hour = index % visibleHoursPerDay
-              const actualHour = VISIBLE_TIMELINE_START_HOUR + hour
-              const isMajor = hour % TIMELINE_HOURS_PER_SLOT === 0
-              return (
-                <div
-                  key={`grid-${index}`}
-                  className={cn(
-                    'absolute bottom-0 top-0',
-                    isMajor ? 'border-l border-[#30363D]/32' : 'border-l border-[#30363D]/10',
-                  )}
-                  style={{ left: `${(index / (days.length * visibleHoursPerDay)) * 100}%` }}
-                  data-hour={actualHour}
-                />
-              )
-            })}
-          </div>
-
-          <div className="absolute inset-0">
-            {rowLayouts.map((row) => {
-              const rowItems = doc.itineraryItems.filter((item) => item.rowId === row.id)
-              const laneCount = row.id === 'travel' ? Math.max(doc.families.length, 1) : 1
-              const laneHeight = row.height / laneCount
-
-              return (
-                <div
-                  key={row.id}
-                  className="absolute left-0 right-0 border-b border-[#30363D]/30 last:border-b-0"
-                  style={{ top: `${row.top}px`, height: `${row.height}px` }}
-                >
-                  {row.id === 'travel'
-                    ? doc.families.slice(1).map((_, index) => (
-                        <div
-                          key={`travel-divider-${index}`}
-                          className="absolute left-0 right-0 border-t border-[#30363D]/20"
-                          style={{ top: `${laneHeight * (index + 1)}px` }}
-                        />
-                      ))
-                    : null}
-
-                  {rowItems.map((item) => {
-                    const itemSpan = getItineraryItemEffectiveSpan(doc, item)
-                    const itemEnd = item.startSlot + itemSpan
-                    const itemDayIndex = Math.min(Math.max(Math.floor(item.startSlot / TIME_SLOTS.length), 0), days.length - 1)
-                    const visibleRange = getDayVisibleCursorRange(itemDayIndex)
-                    const clippedStart = Math.max(item.startSlot, visibleRange.start)
-                    const clippedEnd = Math.min(itemEnd, visibleRange.end)
-                    if (clippedEnd <= clippedStart) return null
-                    const laneIndex =
-                      row.id === 'travel' ? familyLaneMap.get(item.familyIds?.[0]) ?? 0 : 0
-                    const itemTop = row.id === 'travel' ? laneIndex * laneHeight + 2 : 6
-                    const itemHeight = row.id === 'travel' ? laneHeight - 4 : row.height - 12
-                    const selected = selection.type === item.type && selection.id === item.id
-                    const compactTravelItem = row.id === 'travel' && itemSpan <= 0.22
-                    const shortTravelItem = row.id === 'travel' && itemSpan <= 0.42
-                    const compactTravelLabel = compactTravelItem ? getCompactTravelLabel(item) : null
-
-                    const itemWidthPercent = (
-                      projectCursorToVisibleTimelineRatio(clippedEnd, days.length)
-                      - projectCursorToVisibleTimelineRatio(clippedStart, days.length)
-                    ) * 100
-                    const travelMinWidthPx =
-                      row.id === 'travel'
-                        ? compactTravelItem
-                          ? 26
-                          : shortTravelItem
-                            ? 34
-                            : 0
-                        : 0
-
-                    return (
+                    {families.map((family) => (
                       <button
-                        key={item.id}
+                        key={family.id}
                         type="button"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          onSetCursor?.(item.startSlot)
-                          onSelectEntity(item.type, item.id)
+                        onClick={() => {
+                          onSetActiveFamily(family.id)
+                          setShowAccountMenu(false)
                         }}
                         className={cn(
-                          'absolute flex cursor-pointer items-center rounded-[1px] border px-2 text-left transition-[transform,box-shadow] hover:-translate-y-[1px]',
-                          TIMELINE_COLORS[item.color],
-                          selected ? 'ring-1 ring-white/80 shadow-[0_0_0_1px_rgba(255,255,255,0.15)]' : '',
-                          compactTravelItem ? 'justify-center px-1' : '',
+                          'flex w-full items-center justify-between px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#C9D1D9] transition-colors hover:bg-[#30363D]/60',
+                          activeFamily?.id === family.id && 'bg-[#58A6FF]/10 text-[#58A6FF]',
                         )}
-                        title={item.title}
-                        style={{
-                          top: `${itemTop}px`,
-                          height: `${itemHeight}px`,
-                          left: `${projectCursorToVisibleTimelineRatio(clippedStart, days.length) * 100}%`,
-                          width:
-                            row.id === 'travel' && travelMinWidthPx
-                              ? `max(${itemWidthPercent}%, ${travelMinWidthPx}px)`
-                              : `${itemWidthPercent}%`,
-                        }}
                       >
-                        {row.id === 'travel' ? (
-                          <span className={cn('flex min-w-0 items-center gap-1', compactTravelItem ? 'justify-center' : '')}>
-                            {compactTravelItem ? null : <CarFront size={10} className="shrink-0" />}
-                            <span
-                              className={cn(
-                                'truncate font-black uppercase',
-                                compactTravelItem ? 'text-[7px] tracking-[0.12em]' : 'text-[8px] tracking-widest',
-                              )}
-                            >
-                              {compactTravelItem ? compactTravelLabel : item.title}
-                            </span>
-                          </span>
-                        ) : (
-                          <span className="truncate text-[8px] font-black uppercase tracking-widest">
-                            {item.title}
-                          </span>
-                        )}
+                        {family.title}
+                        {activeFamily?.id === family.id && <CheckCircle2 size={12} />}
                       </button>
-                    )
-                  })}
-                </div>
-              )
-            })}
-          </div>
-
-          <div
-            className="absolute bottom-0 top-0 z-10 w-px bg-[#58A6FF] shadow-[0_0_6px_rgba(88,166,255,0.8)]"
-            style={{ left: `${actualTimelineRatio * 100}%` }}
-          >
-            <div className="absolute -top-1 left-1/2 -translate-x-1/2 bg-[#58A6FF] px-2 py-0.5 text-[9px] font-black uppercase text-[#0A0C10]">
-              now
-            </div>
-            <div className="absolute top-5 left-1/2 -translate-x-1/2 whitespace-nowrap bg-[#0d1117] px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wider text-[#58A6FF]">
-              {actualNowLabel}
-            </div>
-          </div>
-
-          {hoverCursorSlot != null ? (
-            <div
-              className="pointer-events-none absolute bottom-0 top-0 z-[15] w-px bg-white/30"
-              style={{ left: `${projectCursorToVisibleTimelineRatio(hoverCursorSlot, days.length) * 100}%` }}
-            >
-              <div className="absolute -top-1 left-1/2 -translate-x-1/2 whitespace-nowrap border border-white/15 bg-[#0d1117]/90 px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.16em] text-[#C9D1D9]">
-                {hoverCursorLabel}
-              </div>
-            </div>
-          ) : null}
-
-          <div
-            className="absolute bottom-0 top-0 z-20 w-px bg-white shadow-[0_0_8px_white]"
-            style={{ left: `${cursorRatio * 100}%` }}
-          >
-            <div className="absolute -top-1 left-1/2 -translate-x-1/2 bg-white px-2 py-0.5 text-[9px] font-black uppercase text-[#0A0C10]">
-              cursor
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="flex h-10 border-t border-[#30363D] bg-[#0d1117]">
-        <div className="flex w-28 items-center justify-center border-r border-[#30363D] px-2">
-          <div className="text-center text-[9px] font-black uppercase tracking-[0.16em] text-[#8B949E]">
-            mission scrub
-          </div>
-        </div>
-        <div className="flex flex-1 divide-x divide-[#30363D]/50">
-          {days.map((day, dayIndex) => (
-            <div key={day.id} className="relative flex flex-1 flex-col">
-              <div className="absolute -top-2 left-2 bg-[#0d1117] px-1.5 text-[8px] font-black uppercase tracking-widest text-[#58A6FF]">
-                {day.shortLabel}
-              </div>
-              <div className="flex h-full">
-                {Array.from({ length: visibleHoursPerDay }).map((_, hourOffset) => {
-                  const hour = VISIBLE_TIMELINE_START_HOUR + hourOffset
-                  const hourCursor = clampTimelineCursor(dayIndex * TIME_SLOTS.length + hour / TIMELINE_HOURS_PER_SLOT)
-                  const showLabel = (hour - VISIBLE_TIMELINE_START_HOUR) % 3 === 0
-                  const isActive = Math.abs(cursorSlot - hourCursor) < (1 / TIMELINE_HOURS_PER_SLOT) / 2
-
-                  return (
+                    ))}
+                    <div className="my-1 h-px bg-[#30363D]" />
                     <button
-                      key={`${day.id}-${hour}`}
                       type="button"
-                      onMouseEnter={() => setHoverCursorSlot(hourCursor)}
-                      onMouseLeave={() => {
-                        if (!draggingRef.current) setHoverCursorSlot(null)
+                      onClick={() => {
+                        onSetActiveFamily(null)
+                        setShowAccountMenu(false)
                       }}
-                      onClick={() => onSetCursor?.(hourCursor)}
-                      className={cn(
-                        'flex flex-1 cursor-pointer items-center justify-center border-r border-[#30363D]/10 text-[9px] font-mono transition-colors last:border-r-0',
-                        isActive
-                          ? 'bg-[#58A6FF]/10 text-[#58A6FF]'
-                          : 'text-[#8B949E] hover:bg-[#1f2a34]/40 hover:text-[#C9D1D9]',
-                      )}
+                      className="flex w-full items-center px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#D29922] transition-colors hover:bg-[#30363D]/60"
                     >
-                      {showLabel ? String(hour).padStart(2, '0') : ''}
+                      Clear active profile
                     </button>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function IntelAction({ icon: Icon, label, onClick, tone = 'default' }) {
-  const tones = {
-    default: 'border-[#30363D] bg-[#0d1117] text-[#C9D1D9] hover:border-[#58A6FF]/40 hover:text-[#58A6FF]',
-    amber: 'border-[#D29922]/30 bg-[#D29922]/10 text-[#D29922] hover:border-[#D29922]',
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'inline-flex items-center gap-2 border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition-colors',
-        tones[tone] || tones.default,
-      )}
-    >
-      <Icon size={13} />
-      {label}
-    </button>
-  )
-}
-
-function InfoRow({ icon: Icon, label, value, muted = false }) {
-  if (!value) return null
-
-  return (
-    <div className="flex items-start gap-2 text-[11px]">
-      {Icon ? <Icon size={13} className="mt-0.5 text-[#58A6FF]" /> : null}
-      <div className="min-w-0">
-        <div className="text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">{label}</div>
-        <div className={muted ? 'mt-0.5 text-[#8B949E]' : 'mt-0.5 text-[#C9D1D9]'}>{value}</div>
-      </div>
-    </div>
-  )
-}
-
-function formatMealTravelSignal(meal, location) {
-  if (!location) return 'Venue pending'
-  if (location.id === 'pine-airbnb') return 'Basecamp meal'
-  if (location.basecampDrive?.durationText) {
-    return `${location.basecampDrive.durationText} from basecamp`
-  }
-  if (meal.dayId === 'sat') return 'Park day lunch'
-  return 'Venue intel loading'
-}
-
-function getMealContextNarrative(meal, location, linkedMission) {
-  if (location?.id === 'pine-airbnb') {
-    return 'Cook-in coverage keeps the day flexible and reduces logistics overhead for families with kids.'
-  }
-  if (meal.id === 'sat-lunch') {
-    return 'This stop needs clean timing because it sits inside the Yosemite mission and depends on traffic, entry flow, and kid energy.'
-  }
-  if (meal.id === 'fri-dinner') {
-    return 'This reservation is the reset valve after lake time and late arrival handoff, so preserving margin matters more than squeezing in extras.'
-  }
-  if (meal.id === 'thu-dinner') {
-    return 'First-night dinner should stay frictionless so arrival, gate access, and room setup do not cascade into everyone else.'
-  }
-  return linkedMission?.summary || location?.summary || meal.note
-}
-
-function getMealMedia(location) {
-  const seen = new Set()
-  return [...(location?.livePhotos || []), ...(location?.photos || [])].filter((media) => {
-    const key = media.imageUrl || media.id
-    if (!key || seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-}
-
-const ACTIVITY_RESEARCH = {
-  'thu-transit': {
-    headline: 'Arrival day should optimize for smooth landfall, not ambition.',
-    cards: [
-      {
-        eyebrow: 'Night Objective',
-        title: 'Check in, decompress, dinner, done',
-        bullets: [
-          'The mission is to get each family through gate access, unload only the essentials, and preserve enough energy for an easy first night.',
-          'Use dinner as the reset point. Do not stack optional errands or sightseeing after arrival.',
-          'If anyone is running late, the fallback is minimum-viable cabin setup plus direct handoff into dinner/rest mode.',
-        ],
-      },
-      {
-        eyebrow: 'Transit Focus',
-        title: 'Each family runs a different inbound playbook',
-        bullets: [
-          'Parkers have the long LA haul, so road-trip stops and dinner timing matter most there.',
-          'Jiangs can act as the most flexible support unit if another family slips.',
-          'The first family on site should not silently inherit all setup work, so arrival responsibilities need to stay explicit.',
-        ],
-      },
-    ],
-  },
-  'fri-lake': {
-    headline: 'Friday should feel local, flexible, and easy on kid energy.',
-    cards: [
-      {
-        eyebrow: 'PML Ideas',
-        title: 'Family-friendly options at Pine Mountain Lake',
-        bullets: [
-          'Marina Beach is the most full-service zone, with picnic tables, grills, a cafe/store, and the easiest all-in family setup.',
-          'Lake Lodge Beach is smaller and has a playground nearby, which makes it a strong fit for alternating swim + play cycles.',
-          'Dunn Court Beach is quieter and works better if you want a lower-stimulus backup.',
-        ],
-      },
-      {
-        eyebrow: 'Extra Options',
-        title: 'Ways to vary the day without leaving PML',
-        bullets: [
-          'The lake community also has a pool, tennis/pickleball, golf, marina/boat access, and an equestrian center.',
-          'A lighter split plan could be beach for the kids while another adult group checks the pool, pickleball, or marina store.',
-          'Because this is inside the gated community, it is the best day to keep logistics low and recover from Thursday transit.',
-        ],
-      },
-    ],
-  },
-  'sat-yosemite': {
-    headline: 'Yosemite should be structured around a few high-payoff, low-friction stops.',
-    cards: [
-      {
-        eyebrow: 'Best Easy Stops',
-        title: 'Family-friendly Yosemite Valley flow',
-        bullets: [
-          'Lower Yosemite Fall is one of the easiest iconic walks in the valley and works well for a first major stop.',
-          "Cook's Meadow is flat, scenic, and a good low-effort way to get valley views without overcommitting.",
-          'Swinging Bridge is useful as a picnic / water / reset stop if kid energy needs a break.',
-        ],
-      },
-      {
-        eyebrow: 'Operational Notes',
-        title: 'Keep the mission flexible',
-        bullets: [
-          'Tunnel View is the easiest headline photo stop if timing or walking tolerance tightens up.',
-          'Shuttle use inside Yosemite Valley can reduce parking churn if the valley is busy.',
-          'If weather or kid pacing degrades, shorten the day and preserve enough energy for the cookout dinner back at basecamp.',
-        ],
-      },
-    ],
-  },
-  'sun-home': {
-    headline: 'Sunday wins when it feels boring, orderly, and pre-decided.',
-    cards: [
-      {
-        eyebrow: 'Morning Flow',
-        title: 'Brunch, reset, depart in waves',
-        bullets: [
-          'Cook brunch early enough that cleanup and final packing do not overlap into a chaotic checkout sprint.',
-          'Assign one adult to cabin reset and one to vehicle staging so the same person is not doing both.',
-          'If possible, pre-pack most kid gear Saturday night and keep only morning essentials out.',
-        ],
-      },
-      {
-        eyebrow: 'Departure Logic',
-        title: 'Reduce Sunday friction',
-        bullets: [
-          'Do a last sweep by zones: kitchen, bathrooms, bedrooms, charging cables, outdoor gear.',
-          'Treat garbage, fridge clean-out, and wet gear as explicit checkout tasks, not end-of-trip surprises.',
-          'Stagger departures if needed instead of forcing everyone into the same checkout bottleneck.',
-        ],
-      },
-    ],
-  },
-}
-
-const JIANG_ROAD_TRIP_STOP_DEFAULTS = [
-  {
-    id: 'north-star-kettleman-lunch',
-    type: 'location',
-    title: 'Bravo Farms',
-    category: 'logistics',
-    dayId: 'thu',
-    stopType: 'Lunch stop',
-    placesQuery: 'Bravo Farms Kettleman City CA',
-    address: '19950 Bernard Dr, Kettleman City, CA 93239',
-    coordinates: { lat: 35.9934, lng: -119.9617 },
-    externalUrl: 'https://www.google.com/maps/search/?api=1&query=Bravo+Farms+Kettleman+City',
-    summary: 'Good halfway lunch + restroom + leg-stretch stop on the LA inbound drive.',
-    linkedEntityKeys: [makeEntityKey('family', 'north-star'), makeEntityKey('itineraryItem', 'north-star-drive')],
-    photos: [],
-    note: '',
-  },
-  {
-    id: 'north-star-oakdale-break',
-    type: 'location',
-    title: 'Oakdale Cheese & Specialties',
-    category: 'logistics',
-    dayId: 'thu',
-    stopType: 'Light break',
-    placesQuery: 'Oakdale Cheese & Specialties Oakdale CA',
-    address: '10040 CA-120, Oakdale, CA 95361',
-    coordinates: { lat: 37.7975, lng: -120.8108 },
-    externalUrl: 'https://www.google.com/maps/search/?api=1&query=Oakdale+Cheese+%26+Specialties',
-    summary: 'Final reset stop before the mountain leg. Good for snacks, bathrooms, and a quick stretch.',
-    linkedEntityKeys: [makeEntityKey('family', 'north-star'), makeEntityKey('itineraryItem', 'north-star-drive')],
-    photos: [],
-    note: '',
-  },
-]
-
-const FAMILY_VEHICLE_DEFAULTS = {
-  'north-star': {
-    originAddress: '2800 E Observatory Rd, Los Angeles, CA 90027',
-    originCoordinates: { lat: 34.1184, lng: -118.3004 },
-    vehicleLabel: 'Vehicle 1',
-    plannedStopIds: ['north-star-kettleman-lunch', 'north-star-oakdale-break'],
-    routeSummary: 'Plan lunch in Kettleman City and a final light break in Oakdale before the last mountain leg into Pine Mountain Lake.',
-  },
-  'silver-peak': {
-    originAddress: '1 Ferry Building, San Francisco, CA 94111',
-    originCoordinates: { lat: 37.7955, lng: -122.3937 },
-    vehicleLabel: 'Vehicle 2',
-    plannedStopIds: ['north-star-oakdale-break'],
-    routeSummary: 'Plan a quick Oakdale Cheese reset stop before the final push into Pine Mountain Lake.',
-  },
-  'desert-bloom': {
-    originAddress: '10 N Virginia St, Reno, NV 89501',
-    originCoordinates: { lat: 39.5296, lng: -119.8138 },
-    vehicleLabel: 'Vehicle 3',
-    plannedStopIds: [],
-    routeSummary: 'Friday arrival push from Reno straight into Pine Mountain Lake.',
-  },
-}
-
-const YOSEMITE_ROUTE_DEFAULTS = {
-  title: 'Big Oak Flat Entrance',
-  placesQuery: 'Big Oak Flat Entrance Yosemite National Park CA',
-  address: 'Big Oak Flat Rd, Yosemite National Park, CA 95321',
-  coordinates: { lat: 37.8108, lng: -119.8744 },
-  externalUrl: 'https://www.google.com/maps/search/?api=1&query=Big+Oak+Flat+Entrance+Yosemite',
-  summary:
-    'Primary Saturday route anchor. Using the west entrance keeps park access, traffic watch, and drive planning grounded in a real checkpoint.',
-}
-
-const ROUTE_SIM_DEFAULTS = {
-  'route-la-north-star': {
-    originCoordinates: { lat: 34.1184, lng: -118.3004 },
-    stopLocationIds: ['north-star-kettleman-lunch', 'north-star-oakdale-break'],
-    destinationLocationId: 'pine-airbnb',
-    simulationStartSlot: 1.75,
-    simulationEndSlot: 2.67,
-    durationSeconds: 5.5 * 60 * 60,
-    simulationMilestones: [
-      { t: 0, progress: 0 },
-      { t: 0.46, progress: 0.44 },
-      { t: 0.56, progress: 0.44 },
-      { t: 0.82, progress: 0.82 },
-      { t: 0.9, progress: 0.82 },
-      { t: 1, progress: 1 },
-    ],
-  },
-  'route-sf-silver-peak': {
-    originCoordinates: { lat: 37.7955, lng: -122.3937 },
-    stopLocationIds: ['north-star-oakdale-break'],
-    destinationLocationId: 'pine-airbnb',
-    simulationStartSlot: 2.09,
-    simulationEndSlot: 2.67,
-    durationSeconds: 3.5 * 60 * 60,
-    simulationMilestones: [
-      { t: 0, progress: 0 },
-      { t: 0.72, progress: 0.74 },
-      { t: 0.82, progress: 0.74 },
-      { t: 1, progress: 1 },
-    ],
-  },
-  'route-sf-desert-bloom': {
-    originCoordinates: { lat: 39.5296, lng: -119.8138 },
-    stopLocationIds: [],
-    destinationLocationId: 'pine-airbnb',
-    simulationStartSlot: 5.33,
-    simulationEndSlot: 6.16,
-    durationSeconds: 5 * 60 * 60,
-    simulationMilestones: [
-      { t: 0, progress: 0 },
-      { t: 0.52, progress: 0.5 },
-      { t: 1, progress: 1 },
-    ],
-  },
-}
-
-function ActivityResearchCard({ eyebrow, title, bullets }) {
-  return (
-    <div className="border border-[#30363D] bg-[#0d1117] p-4">
-      <SectionTitle eyebrow={eyebrow} title={title} />
-      <div className="space-y-2">
-        {bullets.map((bullet) => (
-          <div key={bullet} className="text-[11px] leading-relaxed text-[#C9D1D9]">
-            {bullet}
+                    <button
+                      type="button"
+                      onClick={onExport}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-[#8B949E] transition-colors hover:bg-[#30363D]/60"
+                    >
+                      Export trip data
+                    </button>
+                  </motion.div>
+                </>
+              )}
+            </AnimatePresence>
           </div>
-        ))}
-      </div>
-    </div>
-  )
-}
+        </div>
+      </header>
 
-function TransitStopCard({ stop, onSelectEntity }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onSelectEntity('location', stop.id)}
-      className="border border-[#30363D] bg-[#0d1117] p-4 text-left transition-colors hover:border-[#58A6FF]/40 hover:bg-[#1f2a34]/30"
-    >
-      <div className="text-[9px] font-black uppercase tracking-[0.18em] text-[#D29922]">
-        {stop.stopType || 'Stop'}
-      </div>
-      <div className="mt-1 text-[12px] font-black uppercase tracking-[0.08em] text-[#C9D1D9]">{stop.title}</div>
-      <div className="mt-2 text-[10px] leading-relaxed text-[#8B949E]">{stop.summary || stop.address}</div>
-      {stop.address ? <div className="mt-2 text-[10px] text-[#8B949E]">{stop.address}</div> : null}
-    </button>
+      {children}
+
+      <AnimatePresence>
+        {showSearch && (
+          <div className="fixed inset-0 z-[100] flex items-start justify-center pt-[15vh]">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-[#0d1117]/80 backdrop-blur-md"
+              onClick={() => setShowSearch(false)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="relative w-full max-w-2xl overflow-hidden border border-[#30363D] bg-[#161b22] shadow-[0_0_50px_rgba(0,0,0,0.5)]"
+            >
+              <div className="flex items-center gap-4 border-b border-[#30363D] px-6 py-4">
+                <Search size={22} className="text-[#8B949E]" />
+                <input
+                  ref={searchInputRef}
+                  value={doc.ui.searchQuery}
+                  onChange={(e) => onSearchChange(e.target.value)}
+                  placeholder="Seach missions, families, locations..."
+                  className="flex-1 bg-transparent text-lg text-[#C9D1D9] outline-none placeholder:text-[#484f58]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowSearch(false)}
+                  className="rounded border border-[#30363D] px-2 py-1 text-[10px] font-mono text-[#8B949E]"
+                >
+                  ESC
+                </button>
+              </div>
+
+              <div className="max-h-[60vh] overflow-y-auto px-2 py-2">
+                {searchResults.length > 0 ? (
+                  searchResults.map((result) => (
+                    <button
+                      key={`${result.type}-${result.id}`}
+                      type="button"
+                      onClick={() => {
+                        onOpenEntity(result.type, result.id)
+                        setShowSearch(false)
+                      }}
+                      className="flex w-full items-center justify-between rounded-sm px-4 py-3 text-left transition-colors hover:bg-[#30363D]/40"
+                    >
+                      <div className="flex items-center gap-4">
+                        <div
+                          className="flex h-10 w-10 items-center justify-center border border-[#30363D] bg-[#0d1117]"
+                          style={{
+                            color: categoryColors[result.category] || '#8B949E',
+                            borderColor: `${categoryColors[result.category]}30`,
+                          }}
+                        >
+                          {React.createElement(categoryIcons[result.category] || Info, { size: 18 })}
+                        </div>
+                        <div>
+                          <div className="text-sm font-bold text-[#C9D1D9]">{result.title}</div>
+                          <div className="mt-0.5 text-[11px] text-[#8B949E]">{result.subtitle}</div>
+                        </div>
+                      </div>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-[#484f58]">
+                        {result.type}
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-12 text-[#484f58]">
+                    <Search size={40} className="mb-4 opacity-20" />
+                    <div className="text-lg font-bold">No results found</div>
+                    <div className="text-sm">Try searching for families, food, or upcoming missions.</div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between border-t border-[#30363D] bg-[#0d1117] px-6 py-3">
+                <div className="flex items-center gap-6">
+                  <div className="flex items-center gap-2">
+                    <span className="rounded border border-[#30363D] px-1.5 py-0.5 text-[10px] font-mono text-[#8B949E]">
+                      ↵
+                    </span>
+                    <span className="text-[10px] text-[#8B949E]">Select</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="rounded border border-[#30363D] px-1.5 py-0.5 text-[10px] font-mono text-[#8B949E]">
+                      ↑
+                    </span>
+                    <span className="rounded border border-[#30363D] px-1.5 py-0.5 text-[10px] font-mono text-[#8B949E]">
+                      ↓
+                    </span>
+                    <span className="text-[10px] text-[#8B949E]">Navigate</span>
+                  </div>
+                </div>
+                <div className="text-[10px] font-black uppercase tracking-widest text-[#484f58]">
+                  Universal Search Interface
+                </div>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }
 
@@ -2279,924 +526,514 @@ function ItineraryPage({
   doc,
   selection,
   onSelectEntity,
-  onOpenEntity,
   onSetCursor,
   onUpdateMapUi,
   onHydrateRouteDetails,
-  onUpdatePageNote,
-  onConvertPageNote,
   weatherDays,
   mapWeather,
   mapWeatherTargets,
 }) {
-  const [briefingOpen, setBriefingOpen] = useState(false)
-  const [playbackCursorSlot, setPlaybackCursorSlot] = useState(null)
-  const [isPlaybackPlaying, setIsPlaybackPlaying] = useState(false)
-  const [playbackSpeed, setPlaybackSpeed] = useState(1)
-  const [missionFeedItems, setMissionFeedItems] = useState([])
-  const [missionFeedNow, setMissionFeedNow] = useState(() => Date.now())
-  const [operationGate, setOperationGate] = useState(null)
-  const [operationGateRemainingMs, setOperationGateRemainingMs] = useState(0)
-  const playbackCursorRef = useRef(doc.ui.timeline.cursorSlot)
-  const playbackRunRef = useRef({ anchorCursor: doc.ui.timeline.cursorSlot, anchorTimestamp: null })
-  const operationGateRef = useRef(null)
-  const triggeredOperationCheckpointIdsRef = useRef(new Set())
-  const effectiveCursorSlot = playbackCursorSlot ?? doc.ui.timeline.cursorSlot
-  const context = useMemo(() => getTimelineContext(doc, effectiveCursorSlot), [doc, effectiveCursorSlot])
-  const dailyBriefing = useMemo(() => buildDailyBriefing(doc, context), [doc, context])
-  const operationCheckpoints = useMemo(() => buildOperationCheckpoints(doc), [doc])
-  const playbackHighlightLocationId = useMemo(
-    () => (isPlaybackPlaying ? getPlaybackHighlightLocation(doc, context) : null),
-    [context, doc, isPlaybackPlaying],
-  )
-  const renderedMissionFeedItems = useMemo(() => {
-    const expirationMs = MISSION_FEED_LIFETIME_MS + MISSION_FEED_FADE_MS
-    return missionFeedItems
-      .map((item) => {
-        const ageMs = Math.max(missionFeedNow - (item.createdAt || 0), 0)
-        if (ageMs >= expirationMs) return null
-        return {
-          ...item,
-          phase: ageMs >= MISSION_FEED_LIFETIME_MS ? 'fading' : 'visible',
-        }
-      })
-      .filter(Boolean)
-  }, [missionFeedItems, missionFeedNow])
+  const scrollRef = useRef(null)
+  const isAutoScrollingRef = useRef(false)
+  const [isTimelinePinned, setIsTimelinePinned] = useState(true)
+
+  const handleTimelineInteraction = (event) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const x = event.clientX - rect.left
+    const cursor = x / rect.width
+    onSetCursor(cursor)
+    setIsTimelinePinned(false)
+  }
 
   useEffect(() => {
-    playbackCursorRef.current = effectiveCursorSlot
-  }, [effectiveCursorSlot])
-
-  useEffect(() => {
-    operationGateRef.current = operationGate
-  }, [operationGate])
-
-  const updateMissionFeedItems = useCallback((updater) => {
-    setMissionFeedItems((current) => (typeof updater === 'function' ? updater(current) : updater))
-  }, [])
-
-  const clearMissionFeed = useCallback(() => {
-    setMissionFeedNow(Date.now())
-    updateMissionFeedItems([])
-  }, [])
-
-  useEffect(() => {
-    if (!missionFeedItems.length) return undefined
-
-    const tick = () => {
-      const now = Date.now()
-      const expirationMs = MISSION_FEED_LIFETIME_MS + MISSION_FEED_FADE_MS
-      setMissionFeedNow(now)
-      updateMissionFeedItems((current) => {
-        const next = current.filter((item) => now - (item.createdAt || 0) < expirationMs)
-        return next.length === current.length ? current : next
-      })
+    if (!isTimelinePinned || isAutoScrollingRef.current) return
+    const cursor = doc.ui.timeline.cursorSlot || 0
+    if (scrollRef.current) {
+      const scrollWidth = scrollRef.current.scrollWidth
+      const containerWidth = scrollRef.current.offsetWidth
+      const targetScroll = cursor * scrollWidth - containerWidth / 2
+      scrollRef.current.scrollTo({ left: targetScroll, behavior: 'smooth' })
     }
-
-    tick()
-    const intervalId = window.setInterval(tick, MISSION_FEED_TICK_MS)
-    return () => window.clearInterval(intervalId)
-  }, [missionFeedItems.length, updateMissionFeedItems])
-
-  const handlePlaybackFeedItems = useCallback((items) => {
-    const nextItems = (Array.isArray(items) ? items : [items]).filter(Boolean)
-    if (!nextItems.length) return
-
-    const createdAt = Date.now()
-    updateMissionFeedItems((current) => {
-      const next = [...current]
-      nextItems.forEach((item) => {
-        const nextItem = {
-          ...item,
-          createdAt,
-        }
-        const existingIndex = next.findIndex((existing) => existing.key === item.key)
-        if (existingIndex >= 0) {
-          next.splice(existingIndex, 1)
-        }
-        next.push(nextItem)
-      })
-      return next
-    })
-    setMissionFeedNow(createdAt)
-  }, [updateMissionFeedItems])
-
-  const handleMissionFeedActivate = useCallback((item) => {
-    if (item.entityType && item.entityId) {
-      onOpenEntity(item.entityType, item.entityId)
-      return
-    }
-
-    if (item.locationId) {
-      onSelectEntity('location', item.locationId)
-      return
-    }
-
-    if (item.familyId) {
-      onSelectEntity('family', item.familyId)
-    }
-  }, [onOpenEntity, onSelectEntity])
-
-  const proceedOperationGate = useCallback(() => {
-    operationGateRef.current = null
-    setOperationGate(null)
-    setOperationGateRemainingMs(0)
-  }, [])
-
-  const armOperationCheckpointsFromCursor = useCallback((cursorSlot) => {
-    const normalizedCursor = clampTimelineCursor(cursorSlot)
-    triggeredOperationCheckpointIdsRef.current = new Set(
-      operationCheckpoints
-        .filter((checkpoint) => checkpoint.startSlot <= normalizedCursor + 0.001)
-        .map((checkpoint) => checkpoint.id),
-    )
-  }, [operationCheckpoints])
-
-  const triggerOperationGate = useCallback((checkpoint) => {
-    const holdCursor = clampTimelineCursor(checkpoint.startSlot)
-    playbackCursorRef.current = holdCursor
-    setPlaybackCursorSlot(holdCursor)
-    setOperationGate({
-      ...checkpoint,
-      autoAdvanceMs: checkpoint.autoAdvanceMs || 3000,
-    })
-    setOperationGateRemainingMs(checkpoint.autoAdvanceMs || 3000)
-  }, [])
-
-  const abortOperationGate = useCallback(() => {
-    const committedCursor = clampTimelineCursor(playbackCursorRef.current)
-    operationGateRef.current = null
-    setIsPlaybackPlaying(false)
-    setPlaybackCursorSlot(null)
-    setOperationGate(null)
-    setOperationGateRemainingMs(0)
-    onSetCursor(committedCursor)
-  }, [onSetCursor])
-
-  useEffect(() => {
-    if (!operationGate) return undefined
-
-    setOperationGateRemainingMs(operationGate.autoAdvanceMs)
-    const startedAt = Date.now()
-    const intervalId = window.setInterval(() => {
-      const elapsed = Date.now() - startedAt
-      const remaining = Math.max(operationGate.autoAdvanceMs - elapsed, 0)
-      setOperationGateRemainingMs(remaining)
-      if (remaining <= 0) {
-        window.clearInterval(intervalId)
-        proceedOperationGate()
-      }
-    }, 80)
-
-    return () => window.clearInterval(intervalId)
-  }, [operationGate, proceedOperationGate])
-
-  useEffect(() => {
-    if (!briefingOpen) return undefined
-
-    console.info('[TripCommand] Daily briefing opened', {
-      cursorSlot: effectiveCursorSlot,
-      day: dailyBriefing?.day?.id,
-    })
-
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape') {
-        console.info('[TripCommand] Daily briefing closed via Escape')
-        setBriefingOpen(false)
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [briefingOpen])
-
-  useEffect(() => {
-    if (!isPlaybackPlaying) return undefined
-
-    let frameId = null
-    const maxCursor = clampTimelineCursor(DAYS.length * TIME_SLOTS.length)
-    playbackRunRef.current = {
-      anchorCursor: playbackCursorRef.current,
-      anchorTimestamp: null,
-    }
-
-    const animate = (timestamp) => {
-      if (operationGateRef.current) {
-        playbackRunRef.current.anchorTimestamp = timestamp
-        frameId = window.requestAnimationFrame(animate)
-        return
-      }
-
-      const previousTimestamp = playbackRunRef.current.anchorTimestamp
-      playbackRunRef.current.anchorTimestamp = timestamp
-
-      if (previousTimestamp == null) {
-        frameId = window.requestAnimationFrame(animate)
-        return
-      }
-
-      const rawDeltaSeconds = Math.max((timestamp - previousTimestamp) / 1000, 0)
-      const deltaSeconds =
-        rawDeltaSeconds > PLAYBACK_STALL_RESET_SECONDS
-          ? 0
-          : Math.min(rawDeltaSeconds, PLAYBACK_MAX_FRAME_DELTA_SECONDS)
-      const currentCursor = playbackCursorRef.current
-      const nextCursor = clampTimelineCursor(
-        currentCursor + deltaSeconds * PLAYBACK_SLOT_UNITS_PER_SECOND * playbackSpeed,
-      )
-      const crossedCheckpoint = findCrossedOperationCheckpoint(
-        operationCheckpoints,
-        currentCursor,
-        nextCursor,
-        triggeredOperationCheckpointIdsRef.current,
-      )
-
-      if (crossedCheckpoint) {
-        triggeredOperationCheckpointIdsRef.current.add(crossedCheckpoint.id)
-        triggerOperationGate(crossedCheckpoint)
-        playbackRunRef.current.anchorTimestamp = timestamp
-        frameId = window.requestAnimationFrame(animate)
-        return
-      }
-
-      playbackCursorRef.current = nextCursor
-      setPlaybackCursorSlot(nextCursor)
-
-      if (nextCursor >= maxCursor - 0.002) {
-        setIsPlaybackPlaying(false)
-        setPlaybackCursorSlot(null)
-        onSetCursor(maxCursor)
-        return
-      }
-
-      frameId = window.requestAnimationFrame(animate)
-    }
-
-    frameId = window.requestAnimationFrame(animate)
-    return () => {
-      if (frameId) window.cancelAnimationFrame(frameId)
-    }
-  }, [isPlaybackPlaying, onSetCursor, operationCheckpoints, playbackSpeed, triggerOperationGate])
-
-  const handleTimelineCursorChange = useCallback(
-    (slot) => {
-      const nextCursor = clampTimelineCursor(slot)
-      setOperationGate(null)
-      setOperationGateRemainingMs(0)
-      operationGateRef.current = null
-      armOperationCheckpointsFromCursor(nextCursor)
-      clearMissionFeed()
-      if (isPlaybackPlaying) {
-        playbackRunRef.current = {
-          anchorCursor: nextCursor,
-          anchorTimestamp: null,
-        }
-        playbackCursorRef.current = nextCursor
-        setPlaybackCursorSlot(nextCursor)
-      return
-      }
-      setPlaybackCursorSlot(null)
-      onSetCursor(nextCursor)
-    },
-    [armOperationCheckpointsFromCursor, clearMissionFeed, isPlaybackPlaying, onSetCursor],
-  )
-
-  const handleTogglePlayback = useCallback(() => {
-    console.info('[TripCommand] Playback button clicked', {
-      isPlaybackPlaying,
-      cursorSlot: playbackCursorRef.current,
-      playbackSpeed,
-    })
-
-    if (isPlaybackPlaying) {
-      const committedCursor = clampTimelineCursor(playbackCursorRef.current)
-      setIsPlaybackPlaying(false)
-      setPlaybackCursorSlot(null)
-      operationGateRef.current = null
-      setOperationGate(null)
-      setOperationGateRemainingMs(0)
-      console.info('[TripCommand] Playback paused', { committedCursor })
-      onSetCursor(committedCursor)
-      return
-    }
-
-    const startingCursor = getSuggestedPlaybackStartCursor(doc, doc.ui.timeline.cursorSlot, operationCheckpoints)
-    armOperationCheckpointsFromCursor(startingCursor)
-    clearMissionFeed()
-    playbackRunRef.current = {
-      anchorCursor: startingCursor,
-      anchorTimestamp: null,
-    }
-    playbackCursorRef.current = startingCursor
-    setPlaybackCursorSlot(startingCursor)
-    setIsPlaybackPlaying(true)
-    console.info('[TripCommand] Playback started', { startingCursor, playbackSpeed })
-  }, [armOperationCheckpointsFromCursor, clearMissionFeed, doc, doc.ui.timeline.cursorSlot, isPlaybackPlaying, onSetCursor, operationCheckpoints, playbackSpeed])
-
-  const handleRestartPlayback = useCallback(() => {
-    const restartCursor = 0
-    console.info('[TripCommand] Playback restarted', { restartCursor, isPlaybackPlaying })
-    setOperationGate(null)
-    setOperationGateRemainingMs(0)
-    operationGateRef.current = null
-    triggeredOperationCheckpointIdsRef.current.clear()
-    clearMissionFeed()
-    playbackRunRef.current = {
-      anchorCursor: restartCursor,
-      anchorTimestamp: null,
-    }
-    playbackCursorRef.current = restartCursor
-    if (isPlaybackPlaying) {
-      setPlaybackCursorSlot(restartCursor)
-      return
-    }
-    onSetCursor(restartCursor)
-  }, [clearMissionFeed, isPlaybackPlaying, onSetCursor])
-
-  const handleOpenBriefing = useCallback(() => {
-    console.info('[TripCommand] Daily briefing button clicked', {
-      cursorSlot: effectiveCursorSlot,
-      day: dailyBriefing?.day?.id,
-    })
-    setBriefingOpen(true)
-  }, [dailyBriefing?.day?.id, effectiveCursorSlot])
+  }, [doc.ui.timeline.cursorSlot, isTimelinePinned])
 
   return (
-    <>
-      <div className="grid h-full min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)] overflow-hidden">
-        <div className="min-h-0 overflow-y-auto border-r border-[#30363D] bg-[#0d1117]">
-          <div className="space-y-4 p-4">
-            <SituationBoard context={context} onOpenEntity={onOpenEntity} onOpenBriefing={handleOpenBriefing} />
-            <div>
-              <SectionTitle eyebrow="Response Plans" title="Travel units" meta={`${doc.families.length} families`} />
-              <FamilyList doc={doc} selection={selection} onSelectEntity={onSelectEntity} />
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <div className="relative h-20 shrink-0 border-b border-[#30363D] bg-[#161b22]">
+        <div className="absolute inset-x-0 bottom-0 top-0 flex items-center px-6">
+          <div className="relative h-8 flex-1 border border-[#30363D] bg-[#0d1117]/50" onClick={handleTimelineInteraction}>
+            <div className="absolute inset-0 flex">
+              {DAYS.map((day, index) => (
+                <div
+                  key={day.id}
+                  className={cn(
+                    'relative flex-1 border-r border-[#30363D]/30 px-3 py-1',
+                    index === DAYS.length - 1 && 'border-r-0',
+                  )}
+                >
+                  <div className="text-[8px] font-black uppercase tracking-widest text-[#484f58]">{day.shortLabel}</div>
+                </div>
+              ))}
             </div>
-            <div>
-              <ScenarioControls doc={doc} cursorSlot={effectiveCursorSlot} onSetCursor={handleTimelineCursorChange} />
-            </div>
-            <div>
-              <PageNotesCard
-                title="Planner note"
-                value={getPageNote(doc, 'itinerary')}
-                onChange={(value) => onUpdatePageNote('itinerary', value)}
-                onConvert={() => onConvertPageNote('itinerary')}
-                placeholder="Add a planning note..."
-              />
-            </div>
+            <motion.div
+              className="absolute inset-y-0 z-10 w-0.5 bg-[#58A6FF]"
+              style={{ left: `${(doc.ui.timeline.cursorSlot || 0) * 100}%` }}
+              animate={{ left: `${(doc.ui.timeline.cursorSlot || 0) * 100}%` }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+            >
+              <div className="absolute -left-1.5 -top-1.5 h-3.5 w-3.5 rounded-full border-2 border-[#58A6FF] bg-[#0d1117] shadow-[0_0_8px_rgba(88,166,255,0.4)]" />
+              <div className="absolute -left-[45px] top-6 rounded-sm border border-[#58A6FF]/40 bg-[#0d1117] px-2 py-1 text-[9px] font-black uppercase tracking-widest text-[#58A6FF] backdrop-blur-md">
+                {formatSlotTime(doc.ui.timeline.cursorSlot)}
+              </div>
+            </motion.div>
           </div>
-        </div>
-
-        <div className="grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
-          <div className="relative min-h-0 min-w-0 overflow-hidden">
-            <CommandMap
-              locations={doc.locations}
-              routes={doc.routes}
-              families={doc.families}
-              itineraryItems={doc.itineraryItems}
-              meals={doc.meals}
-              activities={doc.activities}
-              cursorSlot={effectiveCursorSlot}
-              mapUi={doc.ui.map}
-              mapWeather={mapWeather}
-              mapWeatherTargets={mapWeatherTargets}
-              selectedLocationId={getLocationForEntity(doc, getEntityBySelection(doc, selection))?.id || null}
-              selectedRouteId={getRouteForEntity(doc, getEntityBySelection(doc, selection))?.id || null}
-              playbackActive={isPlaybackPlaying}
-              playbackHighlightLocationId={playbackHighlightLocationId}
-              onUpdateMapUi={onUpdateMapUi}
-              onHydrateRouteDetails={onHydrateRouteDetails}
-              onSelectEntity={onSelectEntity}
-              onPlaybackFeedItems={handlePlaybackFeedItems}
-            />
-            <MissionFeedTray
-              items={renderedMissionFeedItems}
-              onActivateItem={handleMissionFeedActivate}
-            />
-          </div>
-          <div className="min-w-0 shrink-0">
-            <TimelineBoard
-              doc={doc}
-              selection={selection}
-              onSelectEntity={onSelectEntity}
-              onSetCursor={handleTimelineCursorChange}
-              weatherDays={weatherDays}
-              cursorSlot={effectiveCursorSlot}
-              isPlaying={isPlaybackPlaying}
-              playbackSpeed={playbackSpeed}
-              onTogglePlayback={handleTogglePlayback}
-              onRestartPlayback={handleRestartPlayback}
-              onSetPlaybackSpeed={setPlaybackSpeed}
-            />
+          <div className="ml-6 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsTimelinePinned(!isTimelinePinned)}
+              className={cn(
+                'flex items-center gap-2 border px-3 py-1.5 text-[9px] font-black uppercase tracking-widest transition-all',
+                isTimelinePinned
+                  ? 'border-[#58A6FF] bg-[#58A6FF]/10 text-[#58A6FF]'
+                  : 'border-[#30363D] bg-[#0d1117] text-[#8B949E]',
+              )}
+            >
+              <Navigation size={10} className={cn(isTimelinePinned && 'animate-pulse')} />
+              <span>{isTimelinePinned ? 'Live Tracking' : 'Free Look'}</span>
+            </button>
           </div>
         </div>
       </div>
-      {briefingOpen ? (
-        <DailyBriefingModal
-          briefing={dailyBriefing}
-          onClose={() => setBriefingOpen(false)}
-          onOpenEntity={(type, id) => {
-            onOpenEntity(type, id)
-            setBriefingOpen(false)
-          }}
-        />
-      ) : null}
-      {operationGate ? (
-        <MissionLaunchModal
-          doc={doc}
-          gate={operationGate}
-          remainingMs={operationGateRemainingMs}
-          onProceed={proceedOperationGate}
-          onAbort={abortOperationGate}
-        />
-      ) : null}
-    </>
+
+      <div className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_440px] overflow-hidden">
+        <div className="relative overflow-hidden bg-[#0d1117]">
+          <CommandMap
+            doc={doc}
+            selection={selection}
+            onSelectEntity={onSelectEntity}
+            onUpdateMapUi={onUpdateMapUi}
+            onHydrateRouteDetails={onHydrateRouteDetails}
+            weather={mapWeather}
+            weatherTargets={mapWeatherTargets}
+          />
+          <div className="absolute right-6 top-6 flex flex-col gap-2">
+            {[
+              { id: 'all', label: 'Global fleet', icon: Layers },
+              { id: 'north-star', label: 'Jiangs', icon: Users },
+              { id: 'family-2', label: 'Parkers', icon: Users },
+              { id: 'family-3', label: 'Riveras', icon: Users },
+            ].map((view) => (
+              <button
+                key={view.id}
+                type="button"
+                onClick={() => onUpdateMapUi({ focusFamilyId: view.id })}
+                className={cn(
+                  'flex items-center gap-3 border px-4 py-2 text-[10px] font-black uppercase tracking-widest transition-all backdrop-blur-md',
+                  doc.ui.map.focusFamilyId === view.id
+                    ? 'border-[#58A6FF] bg-[#58A6FF]/10 text-[#C9D1D9]'
+                    : 'border-[#30363D] bg-[#161b22]/80 text-[#8B949E] hover:border-[#484f58]',
+                )}
+              >
+                <view.icon size={13} />
+                <span>{view.label}</span>
+              </button>
+            ))}
+          </div>
+          
+          <div className="absolute bottom-6 left-6 flex items-center gap-2">
+             <div className="flex border border-[#30363D] bg-[#161b22]/90 p-1 backdrop-blur-md">
+                {DAYS.map((day) => (
+                  <button
+                    key={day.id}
+                    type="button"
+                    onClick={() => onUpdateMapUi({ focusDayId: day.id })}
+                    className={cn(
+                      'flex items-center gap-2 px-3 py-1.5 text-[9px] font-black uppercase tracking-widest transition-all',
+                      doc.ui.map.focusDayId === day.id
+                        ? 'bg-[#58A6FF] text-[#0d1117]'
+                        : 'text-[#8B949E] hover:bg-[#30363D]/40 hover:text-[#C9D1D9]',
+                    )}
+                  >
+                    {day.label}
+                  </button>
+                ))}
+             </div>
+          </div>
+        </div>
+
+        <div className="flex flex-col border-l border-[#30363D] bg-[#161b22]">
+          <div className="shrink-0 border-b border-[#30363D] bg-[#161b22] px-6 py-4">
+            <div className="flex items-center justify-between">
+              <SectionTitle eyebrow="Fleet timeline" title="Operational sequence" />
+              <div className="text-[10px] lowercase italic text-[#8B949E]">{DAYS.length} days operational window</div>
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6 scrollbar-hide">
+            <div className="space-y-12">
+              {DAYS.map((day) => {
+                const dayItems = doc.itineraryItems.filter((item) => item.dayId === day.id)
+                const dayWeather = weatherDays.find((d) => d.id === day.id)
+                return (
+                  <div key={day.id} className="relative">
+                    <div className="sticky top-0 z-20 mb-4 flex items-center justify-between bg-[#161b22]/95 py-2 backdrop-blur-md">
+                      <div className="flex items-baseline gap-3">
+                        <span className="text-[18px] font-black uppercase tracking-wider text-[#C9D1D9]">
+                          {day.title}
+                        </span>
+                        <span className="text-[11px] font-bold uppercase tracking-widest text-[#58A6FF]">
+                          {day.subtitle}
+                        </span>
+                      </div>
+                      {dayWeather && (
+                        <div className="flex items-center gap-3 border border-[#30363D] bg-[#0d1117] px-3 py-1.5 text-[10px] font-bold">
+                          <span className="text-[#C9D1D9]">{dayWeather.temp}°F</span>
+                          <span className="text-[#8B949E] uppercase tracking-widest">{dayWeather.condition}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="relative border-l-2 border-[#30363D] ml-2 pl-6 space-y-4">
+                      {dayItems.length > 0 ? (
+                        dayItems.sort((a,b) => a.startSlot - b.startSlot).map((item) => {
+                          const isSelected = selection.type === 'itineraryItem' && selection.id === item.id
+                          const typeConfig = itineraryItemTypes[item.category] || itineraryItemTypes.activities
+                          const Icon = typeConfig.icon
+                          const color = itineraryItemTypeColors[item.color] || '#8B949E'
+
+                          return (
+                            <div
+                              key={item.id}
+                              role="button"
+                              tabIndex={0}
+                              onClick={() => onSelectEntity('itineraryItem', item.id)}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                  event.preventDefault()
+                                  onSelectEntity('itineraryItem', item.id)
+                                }
+                              }}
+                              className={cn(
+                                'group relative cursor-pointer border px-4 py-3 transition-all',
+                                isSelected
+                                  ? 'border-[#58A6FF] bg-[#24313d]/50 shadow-[0_4px_20px_rgba(0,0,0,0.3)]'
+                                  : 'border-[#30363D] bg-[#0d1117] hover:border-[#484f58]',
+                              )}
+                            >
+                              <div
+                                className="absolute -left-[31px] top-4 h-3 w-3 rounded-full border-2 bg-[#161b22]"
+                                style={{ borderColor: color }}
+                              />
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex items-center gap-3">
+                                  <div
+                                    className="flex h-8 w-8 items-center justify-center border"
+                                    style={{ color, borderColor: `${color}30`, backgroundColor: `${color}05` }}
+                                  >
+                                    <Icon size={16} />
+                                  </div>
+                                  <div>
+                                    <div className="text-[12px] font-black uppercase tracking-wider text-[#C9D1D9]">
+                                      {item.label}
+                                    </div>
+                                    <div className="mt-0.5 flex items-center gap-2 text-[10px] font-bold text-[#8B949E]">
+                                      <Clock size={10} />
+                                      {formatSlotTime(item.startSlot)}
+                                      <span className="opacity-30">·</span>
+                                      {item.span * 15}m duration
+                                    </div>
+                                  </div>
+                                </div>
+                                {isSelected && (
+                                  <motion.div initial={{ scale: 0.8 }} animate={{ scale: 1 }}>
+                                    <ChevronRight className="text-[#58A6FF]" size={16} />
+                                  </motion.div>
+                                )}
+                              </div>
+                            </div>
+                          )
+                        })
+                      ) : (
+                        <div className="py-2 text-[11px] italic text-[#484f58]">Operational slot unassigned</div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PageEmptyState({ icon: Icon, title, description }) {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center bg-[#0d1117] p-12 text-center">
+      <div className="mb-6 flex h-20 w-20 items-center justify-center border border-[#30363D] bg-[#161b22]">
+        <Icon size={40} className="text-[#484f58]" />
+      </div>
+      <h3 className="text-xl font-black uppercase tracking-[0.2em] text-[#C9D1D9]">{title}</h3>
+      <p className="mt-4 max-w-md text-sm leading-relaxed text-[#8B949E]">{description}</p>
+    </div>
   )
 }
 
 function StayPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote }) {
-  const airbnb = getEntityById(doc, 'location', 'pine-airbnb')
-  const showExternalListing = Boolean(airbnb?.externalUrl)
-  const showManual = Boolean(airbnb?.manualUrl)
-  const isSanitizedStay = !showExternalListing && !showManual
+  const stayItems = doc.stayItems || []
+  const activeStayId = selection.type === 'stayItem' ? selection.id : stayItems[0]?.id
+  const activeStay = stayItems.find((item) => item.id === activeStayId) || null
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[minmax(380px,440px)_1fr] overflow-hidden">
+    <div className="grid min-h-0 flex-1 grid-cols-[360px_1fr] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
-        <SectionTitle eyebrow="Basecamp" title={airbnb?.title || 'Basecamp'} meta={TRIP_META.subtitle} />
-        <SelectableCard
-          selected={selection.type === 'location' && selection.id === airbnb.id}
-          onClick={() => onSelectEntity('location', airbnb.id)}
-          className="mb-6 p-4"
-        >
-          <div className="mb-2 text-[10px] font-black uppercase tracking-widest text-[#8B949E]">Location</div>
-          <div className="text-[12px] text-[#C9D1D9]">{airbnb.address}</div>
-          {showExternalListing ? (
-            <div className="mt-3 inline-flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-[#58A6FF]">
-              Open listing <ExternalLink size={12} />
-            </div>
-          ) : null}
-        </SelectableCard>
-        <div className="space-y-4">
-          {doc.stayItems.map((item) => (
+        <SectionTitle eyebrow="Basecamp Intel" title="Lodging & Anchors" />
+        <div className="space-y-2">
+          {stayItems.map((item) => (
             <SelectableCard
               key={item.id}
-              selected={selection.type === item.type && selection.id === item.id}
-              onClick={() => onSelectEntity(item.type, item.id)}
-              className="p-4"
+              selected={activeStayId === item.id}
+              onClick={() => onSelectEntity('stayItem', item.id)}
+              className="px-4 py-3"
             >
-              <div className="mb-2 flex items-center justify-between">
-                <div className="text-[12px] font-black uppercase tracking-widest text-[#C9D1D9]">{item.title}</div>
-                <div className="text-[9px] font-black uppercase tracking-wider text-[#58A6FF]">{item.category}</div>
+              <div className="flex flex-col">
+                <span className="text-[11px] font-black uppercase tracking-widest text-[#C9D1D9]">{item.title}</span>
+                <span className="text-[10px] text-[#8B949E]">{item.category}</span>
               </div>
-              <div className="text-[11px] leading-relaxed text-[#8B949E]">{item.summary}</div>
             </SelectableCard>
           ))}
         </div>
+        <div className="mt-5">
+          <PageNotesCard
+            title="Basecamp note"
+            value={getPageNote(doc, 'stay')}
+            onChange={(value) => onUpdatePageNote('stay', value)}
+            onConvert={() => onConvertPageNote('stay')}
+            placeholder="Capture door codes, household rules, or shared supplies needed..."
+          />
+        </div>
       </div>
+
       <div className="overflow-y-auto bg-[#0d1117] p-6">
-        <SectionTitle eyebrow="Basecamp Intel" title="Arrival, access, and house ops" meta="Visible without drill-in" />
-        <div className="mb-6 grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
-          <div className="border border-[#30363D] bg-[#161b22] p-4">
-            <div className="mb-3 text-[10px] font-black uppercase tracking-[0.18em] text-[#58A6FF]">
-              Arrival packet
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="border border-[#30363D] bg-[#0d1117] p-3">
-                <div className="text-[9px] font-black uppercase tracking-widest text-[#8B949E]">Check-in</div>
-                <div className="mt-1 text-[12px] font-bold text-[#C9D1D9]">{airbnb.checkIn}</div>
+        {activeStay ? (
+          <div className="max-w-4xl space-y-6">
+            <div className="border border-[#30363D] bg-[#161b22] p-6">
+              <div className="mb-4 text-[9px] font-black uppercase tracking-[0.25em] text-[#58A6FF]">
+                Stay Details
               </div>
-              <div className="border border-[#30363D] bg-[#0d1117] p-3">
-                <div className="text-[9px] font-black uppercase tracking-widest text-[#8B949E]">Check-out</div>
-                <div className="mt-1 text-[12px] font-bold text-[#C9D1D9]">{airbnb.checkOut}</div>
-              </div>
-              {airbnb.wifiNetwork || airbnb.wifiPassword ? (
-                <div className="border border-[#30363D] bg-[#0d1117] p-3">
-                  <div className="text-[9px] font-black uppercase tracking-widest text-[#8B949E]">WiFi</div>
-                  <div className="mt-1 text-[12px] font-bold text-[#C9D1D9]">{airbnb.wifiNetwork}</div>
-                  <div className="mt-1 text-[10px] text-[#8B949E]">{airbnb.wifiPassword}</div>
-                </div>
-              ) : null}
-              {airbnb.lockNote ? (
-                <div className="border border-[#30363D] bg-[#0d1117] p-3">
-                  <div className="text-[9px] font-black uppercase tracking-widest text-[#8B949E]">Access</div>
-                  <div className="mt-1 text-[12px] font-bold text-[#C9D1D9]">{airbnb.lockNote}</div>
-                </div>
-              ) : null}
-              {airbnb.hostName || airbnb.coHostName || airbnb.guestSummary ? (
-                <div className="border border-[#30363D] bg-[#0d1117] p-3">
-                  <div className="text-[9px] font-black uppercase tracking-widest text-[#8B949E]">Host</div>
-                  <div className="mt-1 text-[12px] font-bold text-[#C9D1D9]">
-                    {airbnb.hostName}
-                    {airbnb.coHostName ? ` / ${airbnb.coHostName}` : ''}
-                  </div>
-                  <div className="mt-1 text-[10px] text-[#8B949E]">{airbnb.guestSummary}</div>
-                </div>
-              ) : null}
-              <div className="border border-[#30363D] bg-[#0d1117] p-3">
-                <div className="text-[9px] font-black uppercase tracking-widest text-[#8B949E]">
-                  {isSanitizedStay ? 'Sanitized demo mode' : 'Gate fee'}
-                </div>
-                <div className="mt-1 text-[12px] font-bold text-[#C9D1D9]">{airbnb.vehicleFee}</div>
-                <div className="mt-1 text-[10px] text-[#8B949E]">
-                  {isSanitizedStay ? 'Operational access details are intentionally withheld.' : 'Per vehicle at Pine Mountain Dr entrance'}
-                </div>
-              </div>
+              <h2 className="text-2xl font-black uppercase tracking-wider text-[#C9D1D9]">{activeStay.title}</h2>
+              <div className="mt-2 text-[11px] text-[#8B949E]">{activeStay.description}</div>
             </div>
 
-            <div className="mt-4 space-y-3 border-t border-[#30363D]/50 pt-4 text-[11px] leading-relaxed text-[#8B949E]">
-              <div>
-                <div className="mb-1 text-[9px] font-black uppercase tracking-widest text-[#58A6FF]">Arrival route</div>
-                <div>{airbnb.directionsNote}</div>
-              </div>
-              <div>
-                <div className="mb-1 text-[9px] font-black uppercase tracking-widest text-[#58A6FF]">Gate + access</div>
-                <div>{airbnb.accessNote}</div>
-              </div>
-              <div>
-                <div className="mb-1 text-[9px] font-black uppercase tracking-widest text-[#58A6FF]">Parking + Friday ops</div>
-                <div>{airbnb.parkingNote}</div>
-              </div>
-              {airbnb.confirmationCode ? (
-                <div>
-                  <div className="mb-1 text-[9px] font-black uppercase tracking-widest text-[#58A6FF]">Confirmation</div>
-                  <div>{airbnb.confirmationCode}</div>
+            <div className="grid gap-6 md:grid-cols-2">
+              <div className="border border-[#30363D] bg-[#161b22] p-5">
+                <SectionTitle eyebrow="Logistics" title="Access & Rules" />
+                <div className="space-y-4">
+                  <InfoRow icon={Shield} label="Check-in info" value={activeStay.checkIn} />
+                  <InfoRow icon={Clock} label="Checkout protocol" value={activeStay.checkOut} />
+                  <InfoRow icon={Settings} label="Rules" value={activeStay.rules || 'No specific rules listed.'} />
                 </div>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="border border-[#30363D] bg-[#161b22] p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#58A6FF]">
-                Links + media
               </div>
-              {showExternalListing ? (
-                <button
-                  type="button"
-                  onClick={() => window.open(airbnb.externalUrl, '_blank', 'noreferrer')}
-                  className="inline-flex items-center gap-2 text-[9px] font-black uppercase tracking-widest text-[#58A6FF]"
-                >
-                  Open listing <ExternalLink size={12} />
-                </button>
-              ) : null}
-            </div>
-            <div className="mb-3 grid gap-3 sm:grid-cols-2">
-              {(airbnb.photos || []).slice(0, 2).map((media) => (
-                <a
-                  key={media.id}
-                  href={media.sourceUrl || media.imageUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="group overflow-hidden border border-[#30363D] bg-[#0d1117]"
-                >
-                  <div
-                    className="h-28 w-full bg-cover bg-center transition-transform duration-300 group-hover:scale-[1.03]"
-                    style={{ backgroundImage: `url(${media.imageUrl})` }}
-                  />
-                  <div className="flex items-center justify-between gap-3 px-3 py-2 text-[10px] font-bold text-[#C9D1D9]">
-                    <span>{media.label}</span>
-                    <ExternalLink size={12} className="text-[#58A6FF]" />
-                  </div>
-                </a>
-              ))}
-            </div>
-            <div className="space-y-2">
-              {showManual ? (
-                <button
-                  type="button"
-                  onClick={() => window.open(airbnb.manualUrl, '_blank', 'noreferrer')}
-                  className="flex w-full items-center justify-between border border-[#30363D] bg-[#0d1117] px-3 py-3 text-left hover:border-[#58A6FF]/40"
-                >
-                  <div>
-                    <div className="text-[10px] font-black uppercase tracking-widest text-[#58A6FF]">House manual</div>
-                    <div className="mt-1 text-[11px] text-[#C9D1D9]">Open the full guest handbook and rules</div>
-                  </div>
-                  <ExternalLink size={13} className="text-[#58A6FF]" />
-                </button>
-              ) : null}
-              <div className="border border-[#30363D] bg-[#0d1117] px-3 py-3">
-                <div className="text-[10px] font-black uppercase tracking-widest text-[#58A6FF]">Address</div>
-                <div className="mt-1 text-[11px] text-[#C9D1D9]">{airbnb.address}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <SectionTitle eyebrow="House Ops" title="Basecamp assignments" meta="Sleep + arrival + reset" />
-        <div className="mb-6 grid gap-4 md:grid-cols-2">
-          {doc.families.map((family, index) => (
-            <SelectableCard
-              key={family.id}
-              selected={selection.type === 'family' && selection.id === family.id}
-              onClick={() => onSelectEntity('family', family.id)}
-              className="p-4"
-            >
-              <div className="mb-2 text-[11px] font-black uppercase tracking-widest text-[#C9D1D9]">
-                Room {index + 1}
-              </div>
-              <div className="text-[12px] font-bold text-[#58A6FF]">{family.title}</div>
-              <div className="mt-1 text-[10px] text-[#8B949E]">{family.headcount}</div>
-            </SelectableCard>
-          ))}
-        </div>
-        <PageNotesCard
-          title="Stay note"
-          value={getPageNote(doc, 'stay')}
-          onChange={(value) => onUpdatePageNote('stay', value)}
-          onConvert={() => onConvertPageNote('stay')}
-          placeholder="Record gate instructions, sleeping concerns, quiet hours, or house logistics..."
-        />
-      </div>
-    </div>
-  )
-}
-
-function MealsPage({ doc, selection, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }) {
-  const selectedMeal = selection.type === 'meal'
-    ? getEntityById(doc, 'meal', selection.id) || doc.meals[0]
-    : doc.meals[0]
-  const selectedLocation = getLocationForEntity(doc, selectedMeal)
-  const selectedTasks = getTasksForEntity(doc, selectedMeal).filter((task) => task.status !== 'done').slice(0, 2)
-  const linkedMission = getLinkedEntities(doc, selectedMeal).find(
-    (entity) => entity.type === 'activity' || entity.type === 'itineraryItem',
-  )
-  const media = getMealMedia(selectedLocation).slice(0, 3)
-  const travelSummary = selectedLocation?.basecampDrive
-    ? `${selectedLocation.basecampDrive.durationText} · ${selectedLocation.basecampDrive.distanceText}`
-    : selectedLocation?.id === 'pine-airbnb'
-      ? 'No drive required'
-      : 'Directions-driven travel estimate will populate after route intel syncs.'
-  const hoursPreview = selectedLocation?.openingHours?.slice(0, 3).join(' | ')
-  const ratingSummary = selectedLocation?.rating
-    ? `${selectedLocation.rating.toFixed(1)} rating${selectedLocation.userRatingsTotal ? ` · ${selectedLocation.userRatingsTotal} reviews` : ''}`
-    : 'Place details syncing'
-
-  return (
-    <div className="grid min-h-0 flex-1 grid-cols-[minmax(360px,0.78fr)_minmax(520px,1.22fr)] overflow-hidden">
-      <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
-        <SectionTitle eyebrow="Meal Logistics" title="Shared feeding plan" meta="Ownership + prep + kid friendliness" />
-        <div className="space-y-3">
-          {doc.meals.map((meal) => (
-            <div
-              key={meal.id}
-              className={cn(
-                'grid grid-cols-[1fr_auto] gap-3 border px-4 py-4 transition-colors',
-                selection.type === 'meal' && selection.id === meal.id ? 'bg-[#24313d]/50' : '',
-                selection.type === 'meal' && selection.id === meal.id
-                  ? 'border-[#58A6FF]'
-                  : 'border-[#30363D] bg-[#0d1117] hover:border-[#58A6FF]/30 hover:bg-[#1f2a34]/30',
-              )}
-            >
-              <button
-                type="button"
-                onClick={() => onSelectEntity('meal', meal.id)}
-                className="grid min-w-0 grid-cols-[86px_1fr_120px] gap-3 text-left"
-              >
-                <div>
-                  <div className="font-bold text-[#8B949E]">{getDayMeta(meal.dayId)?.shortLabel || meal.dayId}</div>
-                  <div className="mt-1 text-[12px] font-black text-[#C9D1D9]">{meal.timeLabel}</div>
-                </div>
-                <div className="min-w-0">
-                  <div className="font-bold text-[#C9D1D9]">{meal.title}</div>
-                  <div className="mt-1 text-[10px] uppercase tracking-[0.18em] text-[#D29922]">
-                    {getLocationForEntity(doc, meal)?.title || 'Venue pending'}
-                  </div>
-                  <div className="mt-2 text-[10px] leading-relaxed text-[#8B949E]">{meal.note}</div>
-                </div>
-                <div className="space-y-2 text-right">
-                  <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#8B949E]">
-                    {meal.reservationType}
-                  </div>
-                  <div className="text-[10px] text-[#C9D1D9]">{meal.owner}</div>
-                  <div className="text-[10px] text-[#8B949E]">
-                    {formatMealTravelSignal(meal, getLocationForEntity(doc, meal))}
-                  </div>
-                </div>
-              </button>
-              <div className="justify-self-end">
-                <button
-                  type="button"
-                  onClick={() => onToggleMealStatus(meal.id)}
-                  className="border border-transparent"
-                >
-                  <StatusPill tone={meal.status}>{meal.status}</StatusPill>
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-      <div className="overflow-y-auto bg-[#0d1117] p-6">
-        {selectedMeal ? (
-          <>
-            <div className="border border-[#30363D] bg-[#161b22] p-5">
-              <div className="mb-2 flex items-start justify-between gap-4">
-                <div>
-                  <div className="mb-1 text-[9px] font-black uppercase tracking-[0.2em] text-[#58A6FF]">
-                    Venue planning surface
-                  </div>
-                  <h2 className="text-[18px] font-black uppercase tracking-[0.12em] text-[#C9D1D9]">
-                    {selectedMeal.title}
-                  </h2>
-                  <div className="mt-2 text-[11px] text-[#8B949E]">
-                    {getDayMeta(selectedMeal.dayId)?.title} at {selectedMeal.timeLabel} · {selectedMeal.reservationType}
-                  </div>
-                </div>
-                <StatusPill tone={selectedMeal.status}>{selectedMeal.status}</StatusPill>
-              </div>
-
-              <div className="mb-4 flex flex-wrap gap-2">
-                {selectedLocation?.externalUrl ? (
+              {activeStay.locationId && (
+                <div className="border border-[#30363D] bg-[#161b22] p-5">
+                  <SectionTitle eyebrow="Navigation" title="Anchor Point" />
                   <IntelAction
                     icon={MapPin}
-                    label="Open in Google Maps"
-                    onClick={() => window.open(selectedLocation.externalUrl, '_blank', 'noreferrer')}
+                    label="Inspect on map"
+                    onClick={() => onSelectEntity('location', activeStay.locationId)}
                   />
-                ) : null}
-                {selectedLocation?.websiteUrl ? (
-                  <IntelAction
-                    icon={Globe}
-                    label="Venue website"
-                    onClick={() => window.open(selectedLocation.websiteUrl, '_blank', 'noreferrer')}
-                  />
-                ) : null}
-                {linkedMission ? (
-                  <IntelAction
-                    icon={Route}
-                    label={`Linked to ${linkedMission.title}`}
-                    onClick={() => onSelectEntity(linkedMission.type, linkedMission.id)}
-                    tone="amber"
-                  />
-                ) : null}
-              </div>
-
-              <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
-                <div className="border border-[#30363D] bg-[#0d1117] p-4">
-                  <SectionTitle eyebrow="Venue Intel" title={selectedLocation?.title || 'Venue pending'} meta={ratingSummary} />
-                  <div className="space-y-3">
-                    <InfoRow icon={MapPin} label="Location" value={selectedLocation?.address || 'Waiting for place resolution'} />
-                    <InfoRow icon={Phone} label="Phone" value={selectedLocation?.phoneNumber} />
-                    <InfoRow icon={Star} label="Reservation note" value={selectedLocation?.reservationNote || selectedMeal.note} muted />
-                    <InfoRow
-                      icon={ExternalLink}
-                      label="Hours"
-                      value={hoursPreview || 'Opening hours will appear when place details are available.'}
-                      muted={!hoursPreview}
-                    />
-                  </div>
                 </div>
-
-                <div className="border border-[#30363D] bg-[#0d1117] p-4">
-                  <SectionTitle eyebrow="Movement" title="Drive / prep context" meta={travelSummary} />
-                  <div className="space-y-3">
-                    <InfoRow
-                      icon={Route}
-                      label="From basecamp"
-                      value={travelSummary}
-                      muted={!selectedLocation?.basecampDrive && selectedLocation?.id !== 'pine-airbnb'}
-                    />
-                    <InfoRow
-                      icon={ArrowRight}
-                      label="Why this matters"
-                      value={getMealContextNarrative(selectedMeal, selectedLocation, linkedMission)}
-                      muted
-                    />
-                    {selectedTasks.length ? (
-                      <div className="rounded-[2px] border border-[#30363D] bg-[#161b22] px-3 py-3">
-                        <div className="mb-2 text-[9px] font-black uppercase tracking-[0.18em] text-[#8B949E]">
-                          Critical calls
-                        </div>
-                        <div className="space-y-2">
-                          {selectedTasks.map((task) => (
-                            <div key={task.id} className="text-[11px] text-[#C9D1D9]">
-                              {task.title}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
+              )}
             </div>
-
-            {media.length ? (
-              <div className="mt-5 border border-[#30363D] bg-[#161b22] p-5">
-                <SectionTitle eyebrow="Visual Intel" title="Venue references" meta={`${media.length} asset${media.length > 1 ? 's' : ''}`} />
-                <div className="grid gap-4 md:grid-cols-3">
-                  {media.map((item) => (
-                    <a
-                      key={item.id}
-                      href={item.sourceUrl || selectedLocation?.externalUrl || '#'}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="group overflow-hidden border border-[#30363D] bg-[#0d1117]"
-                    >
-                      <div className="aspect-[4/3] overflow-hidden">
-                        <img
-                          src={item.imageUrl}
-                          alt={item.label}
-                          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
-                        />
-                      </div>
-                      <div className="border-t border-[#30363D] px-3 py-2 text-[10px] font-bold uppercase tracking-[0.16em] text-[#C9D1D9]">
-                        {item.label}
-                      </div>
-                    </a>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="mt-5">
-              <PageNotesCard
-                title="Feeding note"
-                value={getPageNote(doc, 'meals')}
-                onChange={(value) => onUpdatePageNote('meals', value)}
-                onConvert={() => onConvertPageNote('meals')}
-                placeholder="Capture grocery strategy, allergy notes, kid fallback meals, or timing calls for restaurant stops..."
-              />
-            </div>
-          </>
-        ) : null}
+          </div>
+        ) : (
+          <PageEmptyState
+            icon={Home}
+            title="No Stay Selected"
+            description="Select a basecamp entry from the roster to view lodging logistics and check-in protocols."
+          />
+        )}
       </div>
     </div>
   )
 }
 
-function ActivitiesPage({ doc, selection, onSelectEntity, onUpdatePageNote, onConvertPageNote, onAddActivity }) {
-  const selectedActivity = useMemo(
-    () => (selection.type === 'activity' ? doc.activities.find((activity) => activity.id === selection.id) || doc.activities[0] : doc.activities[0]),
-    [doc.activities, selection],
-  )
-  const selectedLocation = useMemo(() => getLocationForEntity(doc, selectedActivity), [doc, selectedActivity])
-  const linkedEntities = useMemo(() => getLinkedEntities(doc, selectedActivity), [doc, selectedActivity])
-  const linkedTimelineItems = useMemo(
-    () => linkedEntities.filter((entity) => entity.type === 'itineraryItem'),
-    [linkedEntities],
-  )
-  const research = selectedActivity ? ACTIVITY_RESEARCH[selectedActivity.id] : null
-  const transitFamilies = useMemo(() => {
-    if (!selectedActivity || selectedActivity.id !== 'thu-transit') return []
+function getPageNote(doc, pageId) {
+  return doc.pageNotes?.[pageId] || ''
+}
 
-    return linkedTimelineItems
-      .filter((item) => item.familyIds?.length === 1)
-      .map((item) => {
-        const family = getEntityById(doc, 'family', item.familyIds[0])
-        const route = getRouteForEntity(doc, item)
-        const stops = (route?.stopLocationIds || [])
-          .map((stopId) => getEntityById(doc, 'location', stopId))
-          .filter(Boolean)
-
-        return family && route
-          ? {
-              family,
-              route,
-              itineraryItem: item,
-              stops,
-            }
-          : null
-      })
-      .filter(Boolean)
-  }, [doc, linkedTimelineItems, selectedActivity])
-  const [selectedTransitFamilyId, setSelectedTransitFamilyId] = useState(null)
-  useEffect(() => {
-    if (!transitFamilies.length) {
-      setSelectedTransitFamilyId(null)
-      return
-    }
-
-    if (!transitFamilies.some((entry) => entry.family.id === selectedTransitFamilyId)) {
-      setSelectedTransitFamilyId(transitFamilies[0].family.id)
-    }
-  }, [selectedTransitFamilyId, transitFamilies])
-  const selectedTransitPlan = useMemo(
-    () => transitFamilies.find((entry) => entry.family.id === selectedTransitFamilyId) || transitFamilies[0] || null,
-    [selectedTransitFamilyId, transitFamilies],
-  )
-  const [draftTitle, setDraftTitle] = useState('')
-  const [draftDayId, setDraftDayId] = useState('fri')
-  const [draftWindow, setDraftWindow] = useState('Fri / flexible')
-  const [draftDescription, setDraftDescription] = useState('')
+function MealsPage({ doc, selection, currentFamily, onSelectEntity, onToggleMealStatus, onUpdatePageNote, onConvertPageNote }) {
+  const [editingDayName, setEditingDayName] = useState(null)
+  const currentDayName = editingDayName || DAYS.find((d) => d.id === (doc.ui.timeline.cursorSlot || 0))?.title || 'Thursday'
+  const dayMeals = doc.meals.filter((m) => m.dayName === currentDayName)
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[360px_minmax(560px,1fr)] overflow-hidden">
+    <div className="grid min-h-0 flex-1 grid-cols-[360px_1fr] overflow-hidden">
       <div className="overflow-y-auto border-r border-[#30363D] bg-[#161b22] p-6">
-        <SectionTitle eyebrow="Activity Board" title="Day missions" meta={`${doc.activities.length} tracked`} />
-        <div className="space-y-4">
-          {doc.activities.map((activity) => (
+        <SectionTitle eyebrow="Supplies" title="Operational days" />
+        <div className="space-y-1">
+          {DAYS.map((day) => (
+            <button
+              key={day.id}
+              type="button"
+              onClick={() => setEditingDayName(day.title)}
+              className={cn(
+                'flex w-full items-center justify-between border px-4 py-3 text-left transition-all',
+                currentDayName === day.title
+                  ? 'border-[#58A6FF] bg-[#58A6FF]/10 text-[#C9D1D9]'
+                  : 'border-transparent text-[#8B949E] hover:bg-[#30363D]/40',
+              )}
+            >
+              <span className="text-[11px] font-black uppercase tracking-widest">{day.title}</span>
+              <span className="text-[9px] font-bold text-[#484f58]">{doc.meals.filter((m) => m.dayName === day.title).length} meals</span>
+            </button>
+          ))}
+        </div>
+        <div className="mt-5">
+          <PageNotesCard
+            title="Logistics note"
+            value={getPageNote(doc, 'meals')}
+            onChange={(value) => onUpdatePageNote('meals', value)}
+            onConvert={() => onConvertPageNote('meals')}
+            placeholder="Capture grocery lists, allergy alerts, or specific kitchen tasks..."
+          />
+        </div>
+      </div>
+
+      <div className="overflow-y-auto bg-[#0d1117] p-6">
+        <SectionTitle eyebrow="Fueling" title={`${currentDayName} meal plan`} />
+        {currentFamily ? (
+          <div className="mb-4 border border-[#30363D] bg-[#161b22] px-3 py-2 text-[11px] text-[#8B949E]">
+            Toggling status as <span className="font-bold text-[#C9D1D9]">{currentFamily.title}</span>.
+          </div>
+        ) : null}
+        <div className="grid gap-4">
+          {dayMeals.map((meal) => {
+            const isSelected = selection.type === 'meal' && selection.id === meal.id
+            return (
+              <SelectableCard
+                key={meal.id}
+                selected={isSelected}
+                onClick={() => onSelectEntity('meal', meal.id)}
+                className="p-5"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-center gap-4">
+                    <div className="flex h-12 w-12 items-center justify-center border border-[#30363D] bg-[#0d1117]">
+                      <Utensils size={20} className="text-[#8B949E]" />
+                    </div>
+                    <div>
+                      <div className="text-[14px] font-black uppercase tracking-wider text-[#C9D1D9]">
+                        {meal.mealName}
+                      </div>
+                      <div className="mt-1 text-[11px] text-[#8B949E]">
+                        {meal.ownerName} · {meal.note}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onToggleMealStatus(meal.id)
+                    }}
+                  >
+                    <StatusPill tone={meal.status}>{meal.status}</StatusPill>
+                  </button>
+                </div>
+              </SelectableCard>
+            )
+          })}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TransitStopCard({ stop, onSelectEntity }) {
+  const Icon = categoryIcons[stop.category] || MapPin
+  const color = categoryColors[stop.category] || '#8B949E'
+
+  return (
+    <SelectableCard onClick={() => onSelectEntity('location', stop.id)} className="p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex h-7 w-7 items-center justify-center border" style={{ borderColor: `${color}40`, color }}>
+          <Icon size={14} />
+        </div>
+        <div className="text-[9px] font-black uppercase tracking-widest text-[#8B949E]">{stop.category}</div>
+      </div>
+      <div className="text-[11px] font-bold text-[#C9D1D9]">{stop.title}</div>
+      <div className="mt-1 text-[10px] lowercase italic text-[#8B949E]">{stop.reason || 'Transit stop'}</div>
+    </SelectableCard>
+  )
+}
+
+function ActivityResearchCard({ eyebrow, title, bullets }) {
+  return (
+    <div className="border border-[#30363D] bg-[#0d1117] p-4">
+      <SectionTitle eyebrow={eyebrow} title={title} />
+      <ul className="space-y-2">
+        {bullets.map((bullet, index) => (
+          <li key={index} className="flex items-start gap-2 text-[11px] leading-relaxed text-[#8B949E]">
+            <span className="mt-1.5 h-1 w-1 shrink-0 bg-[#58A6FF]" />
+            <span>{bullet}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+function ActivitiesPage({ doc, selection, onSelectEntity, onAddActivity, onUpdatePageNote, onConvertPageNote }) {
+  const activities = doc.activities
+  const [selectedTransitFamilyId, setSelectedTransitFamilyId] = useState('north-star')
+  const [draftTitle, setDraftTitle] = useState('')
+  const [draftDayId, setDraftDayId] = useState('thu')
+  const [draftWindow, setDraftWindow] = useState('')
+  const [draftDescription, setDraftDescription] = useState('')
+
+  const selectedActivity = selection.type === 'activity' ? activities.find((a) => a.id === selection.id) : null
+  const selectedLocation = selectedActivity ? getLocationForEntity(doc, selectedActivity) : null
+  const research = (selectedActivity?.id === 'thu-transit' ? null : selectedActivity?.research) || null
+
+  const transitFamilies = useMemo(() => {
+    return doc.families
+      .filter((family) => family.id !== 'riveras')
+      .map((family) => {
+        const route = doc.routes.find((r) => r.id === `route-${family.id === 'north-star' ? 'la-north-star' : 'la-family-2'}`)
+        const stops = (route?.stopLocationIds || []).map((sid) => doc.locations.find((l) => l.id === sid)).filter(Boolean)
+        return { family, route, stops }
+      })
+  }, [doc.families, doc.routes, doc.locations])
+
+  const selectedTransitPlan = transitFamilies.find((f) => f.family.id === selectedTransitFamilyId)
+
+  const getDayMeta = (id) => DAYS.find((d) => d.id === id)
+
+  return (
+    <div className="grid min-h-0 flex-1 grid-cols-[360px_1fr] overflow-hidden">
+      <div className="flex flex-col border-r border-[#30363D] bg-[#161b22]">
+        <div className="shrink-0 p-6 pb-2">
+          <SectionTitle eyebrow="Mission Ops" title="Target roster" meta={`${activities.length} total`} />
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-2">
+          {activities.map((activity) => (
             <SelectableCard
               key={activity.id}
               selected={selection.type === 'activity' && selection.id === activity.id}
               onClick={() => onSelectEntity('activity', activity.id)}
-              className="p-4"
+              className="mb-2 p-4"
             >
-              <div className="mb-2 flex items-center justify-between">
-                <h3 className="text-[13px] font-black uppercase tracking-widest text-[#C9D1D9]">{activity.title}</h3>
+              <div className="mb-2 flex items-start justify-between">
+                <div>
+                  <div className="text-[12px] font-black uppercase tracking-wider text-[#C9D1D9]">
+                    {activity.title}
+                  </div>
+                  <div className="text-[10px] text-[#8B949E]">
+                    {getDayMeta(activity.dayId)?.shortLabel.toUpperCase()} · {activity.window}
+                  </div>
+                </div>
                 <StatusPill tone={activity.status}>{activity.status}</StatusPill>
-              </div>
-              <div className="mb-3 text-[10px] font-bold uppercase tracking-widest text-[#58A6FF]">
-                {activity.window}
               </div>
               <p className="mb-3 text-[11px] leading-relaxed text-[#C9D1D9]">{activity.description}</p>
               <div className="border-t border-[#30363D]/50 pt-3 text-[10px] leading-relaxed text-[#8B949E]">
@@ -3868,8 +1705,35 @@ function withRefreshedFamilies(nextDoc) {
 }
 
 function App() {
-  const [doc, setDoc] = usePersistedTripState(TRIP_DOCUMENT_STORAGE_KEY, getInitialTripDocument())
-  const [viewerProfile, setViewerProfile] = usePersistedTripState(VIEWER_PROFILE_STORAGE_KEY, { familyId: null })
+  const { doc: supabaseDoc, isLoading: isSupabaseLoading, trip } = useTripData();
+  const [doc, setDoc] = useState(getInitialTripDocument());
+  const [viewerProfile, setViewerProfile] = useState({ familyId: null });
+
+  const updateFamilyStatusMutation = useUpdateFamilyStatus();
+  const updateChecklistMutation = useUpdateChecklist();
+
+  useEffect(() => {
+    if (supabaseDoc && !isSupabaseLoading) {
+      // Sync doc with Supabase but merge with initial static data (locations/routes)
+      setDoc(prev => ({
+        ...prev,
+        ...supabaseDoc,
+        // Ensure static data remains if not in Supabase yet
+        locations: prev.locations.length ? prev.locations : supabaseDoc.locations,
+        routes: prev.routes.length ? prev.routes : supabaseDoc.routes
+      }));
+    }
+  }, [supabaseDoc, isSupabaseLoading]);
+
+  // Handle local persistence for viewer profile ONLY
+  useEffect(() => {
+    const saved = localStorage.getItem(VIEW_PROFILE_STORAGE_KEY);
+    if (saved) setViewerProfile(JSON.parse(saved));
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(VIEW_PROFILE_STORAGE_KEY, JSON.stringify(viewerProfile));
+  }, [viewerProfile]);
   const visibilityMode = PUBLISH_CONFIG.visibilityMode
   const liveExternalData = isLiveExternalDataEnabled()
   const displayDoc = useMemo(() => projectTripDocument(doc, visibilityMode), [doc, visibilityMode])
@@ -4569,6 +2433,13 @@ function App() {
   }
 
   const toggleTask = (taskId) => {
+    const task = doc.tasks?.find(t => t.id === taskId);
+    if (task && task.id && !task.id.startsWith('task-user-')) {
+       // Only update Supabase for permanent tasks (checklists)
+       // Map 'done' status for Supabase
+       updateChecklistMutation.mutate({ id: taskId, done: task.status !== 'done' });
+    }
+
     setDoc((current) => {
       const nextDoc = {
         ...current,
@@ -4658,6 +2529,18 @@ function App() {
       activities: [...current.activities, newActivity],
       selection: { type: 'activity', id: newActivity.id },
     }))
+
+    // Persist to Supabase if possible
+    supabase.from('pft_activities').insert({
+        id: newActivity.id,
+        trip_id: trip?.id,
+        title: newActivity.title,
+        status_text: newActivity.status,
+        window_time: newActivity.window,
+        description: newActivity.description
+    }).then(({ error }) => {
+        if (error) console.error('Supabase activity sync failed:', error);
+    });
   }
 
   const convertNoteToTask = (entityType, entityId) => {
